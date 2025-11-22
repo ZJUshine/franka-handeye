@@ -11,6 +11,7 @@ setup(
         "PyYAML",
         "scipy",
         "matplotlib",
+        "Pillow",
         "franky-remote", 
     ],
 )

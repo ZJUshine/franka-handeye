@@ -4,4 +4,5 @@ pyrealsense2
 PyYAML
 scipy
 matplotlib
+Pillow
 git+https://github.com/kvasios/franky-remote.git
