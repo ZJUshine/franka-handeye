@@ -421,7 +421,18 @@ def run_automatic(robot, camera, detector, joint_poses, output_dir, K, D):
             if frame is None: continue
             
             state = robot.state
-            O_T_EE = np.array(state.O_T_EE).tolist()
+            
+            # Manual extraction similar to manual mode to avoid pickling issues
+            q_remote = state.q
+            q = [float(q_remote[i]) for i in range(len(q_remote))]
+            
+            O_T_EE_affine = state.O_T_EE
+            O_T_EE_matrix_remote = O_T_EE_affine.matrix
+            O_T_EE = []
+            for r in range(4):
+                row_remote = O_T_EE_matrix_remote[r]
+                row = [float(row_remote[c]) for c in range(4)]
+                O_T_EE.extend(row)
             
             valid, rvec, tvec, _ = detector.detect(frame, K, D)
             
@@ -436,15 +447,15 @@ def run_automatic(robot, camera, detector, joint_poses, output_dir, K, D):
             cv2.imwrite(str(pose_dir / "image.png"), frame)
             
             data = {
-                "joint_pose": pose,
+                "joint_pose": q,
                 "O_T_EE": O_T_EE,
-                "camera_intrinsics": K,
-                "dist_coeffs": D,
+                "camera_intrinsics": K.tolist() if isinstance(K, np.ndarray) else K,
+                "dist_coeffs": D.tolist() if isinstance(D, np.ndarray) else D,
                 "charuco_detected": valid,
             }
             if valid:
-                data["T_cam_target_rvec"] = rvec.tolist()
-                data["T_cam_target_tvec"] = tvec.tolist()
+                data["T_cam_target_rvec"] = rvec.tolist() if hasattr(rvec, 'tolist') else rvec
+                data["T_cam_target_tvec"] = tvec.tolist() if hasattr(tvec, 'tolist') else tvec
                 
             with open(pose_dir / "data.json", 'w') as f:
                 json.dump(data, f, indent=4, cls=NumpyEncoder)
@@ -471,7 +482,7 @@ def main():
     try:
         robot = Robot(args.host)
         robot.recover_from_errors()
-        robot.relative_dynamics_factor = 0.05 # Set global dynamics factor as requested
+        # Dynamics factor will be set based on mode (manual vs automatic)
     except Exception as e:
         print(f"Failed to connect to robot: {e}")
         camera.stop()
@@ -493,10 +504,12 @@ def main():
     
     if mode_manual:
         print("Starting Manual GUI Mode (Cartesian Jogging)...")
+        robot.relative_dynamics_factor = 0.05  # Low dynamics for manual jogging
         root = tk.Tk()
         app = ManualCaptureApp(root, robot, camera, detector, output_dir, K, D)
         root.mainloop()
     else:
+        robot.relative_dynamics_factor = 0.2  # Faster dynamics for automatic mode
         run_automatic(robot, camera, detector, joint_poses, output_dir, K, D)
         camera.stop()
 
