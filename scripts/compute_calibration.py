@@ -30,30 +30,43 @@ def load_captured_data(data_dir):
             print(f"Skipping {p_dir.name}: Charuco not detected.")
             continue
             
-        # Extract Robot Pose (T_gripper2base)
+        # Extract Robot Pose (T_gripper2base = O_T_EE from Franka)
+        # O_T_EE is stored as 16-element row-major flattened matrix
         O_T_EE = np.array(data["O_T_EE"])
         
-        if O_T_EE.shape == (16,):
-            T_g2b = O_T_EE.reshape(4, 4).T
-        elif O_T_EE.shape == (4, 4):
-            if np.allclose(O_T_EE[3, :], [0, 0, 0, 1]):
-                T_g2b = O_T_EE
-            elif np.allclose(O_T_EE[:, 3], [0, 0, 0, 1]):
-                 T_g2b = O_T_EE.T
-            else:
-                 T_g2b = O_T_EE 
-        else:
-             continue
+        # Reshape from row-major (C-order) flattened array
+        T_g2b = O_T_EE.reshape(4, 4)
+        
+        # Verify it's a valid transformation matrix
+        if not np.allclose(T_g2b[3, :], [0, 0, 0, 1]):
+            print(f"Warning: {p_dir.name} has invalid homogeneous row")
+            continue
 
         R_g2b = T_g2b[:3, :3]
         t_g2b = T_g2b[:3, 3]
         
-        # Extract Target Pose (T_target2cam)
+        # Extract Target Pose from OpenCV solvePnP
+        # OpenCV's solvePnP gives us the pose of the target frame in the camera frame
+        # rvec, tvec define the transformation FROM target frame TO camera frame
+        # This is what cv2.calibrateHandEye expects as R_target2cam, t_target2cam
         rvec = np.array(data["T_cam_target_rvec"]).flatten()
         tvec = np.array(data["T_cam_target_tvec"]).flatten()
         
         R_t2c, _ = cv2.Rodrigues(rvec)
         t_t2c = tvec
+        
+        # Debug output for first pose
+        if valid_poses == 0:
+            print("\n=== Debug First Pose ===")
+            print(f"O_T_EE shape: {O_T_EE.shape}")
+            print(f"T_gripper2base:\n{T_g2b}")
+            print(f"Gripper translation: {t_g2b}")
+            print(f"rvec: {rvec}")
+            print(f"tvec: {tvec}")
+            print(f"R_target2cam:\n{R_t2c}")
+            print(f"Det(R_g2b): {np.linalg.det(R_g2b):.6f}")
+            print(f"Det(R_t2c): {np.linalg.det(R_t2c):.6f}")
+            print("========================\n")
         
         R_gripper2base.append(R_g2b)
         t_gripper2base.append(t_g2b)
