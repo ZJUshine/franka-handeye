@@ -1,0 +1,7 @@
+numpy
+opencv-contrib-python
+pyrealsense2
+PyYAML
+scipy
+git+https://github.com/kvasios/franky-remote.git
+
