@@ -387,7 +387,7 @@ def main():
         # Execute absolute motion to center
         print("\n🤖 Moving robot to board center...")
         target_affine = Affine(translation_list, quaternion_list)
-        motion = CartesianMotion(target_affine, ReferenceType.Absolute, 0.1)
+        motion = CartesianMotion(target_affine, ReferenceType.Absolute, 0.5)
         robot.move(motion)
         
         print("✓ Reached board center!")
@@ -423,7 +423,7 @@ def main():
             # Move to corner
             print(f"🤖 Moving to {corner_name} corner...")
             target_affine_corner = Affine(translation_corner, quaternion_corner)
-            motion_corner = CartesianMotion(target_affine_corner, ReferenceType.Absolute, 0.8)
+            motion_corner = CartesianMotion(target_affine_corner, ReferenceType.Absolute, 1.0)
             robot.move(motion_corner)
             print(f"✓ Reached {corner_name} corner")
             

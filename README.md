@@ -2,6 +2,8 @@
 
 A pure Python tool for hand-eye calibration of the Franka robot using a RealSense camera and Charuco board.
 
+![Calibration Verification](data/media/franka-handeye-verification.gif)
+
 ## Installation
 
 ### 1. Server Setup (Set & Forget)
