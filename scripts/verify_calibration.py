@@ -232,7 +232,8 @@ def main():
     print("   3. Ensure the workspace is clear and safe for robot motion")
     print("   4. Have the emergency stop readily accessible")
     print(f"\nThis script will move the robot to align the end effector {args.offset}m")
-    print("above the detected charuco board, visiting the center and all 4 corners.")
+    print("above the detected charuco board, tracing its complete perimeter:")
+    print("Center → Top-Left → Top-Right → Bottom-Right → Bottom-Left → Top-Left")
     print("\n" + "=" * 70)
     
     response = input("\n➤ Press ENTER to continue or Ctrl+C to abort: ")
@@ -379,7 +380,8 @@ def main():
         print("\n" + "=" * 70)
         print("The robot will visit:")
         print("  1. Center of the board")
-        print("  2. All 4 corners (Top-Left, Top-Right, Bottom-Right, Bottom-Left)")
+        print("  2. All 4 corners (Top-Left → Top-Right → Bottom-Right → Bottom-Left → Top-Left)")
+        print("     This traces all 4 edges of the board!")
         response = input("\n➤ Proceed with corner tour? Press ENTER to continue or Ctrl+C to abort: ")
         
         # Execute absolute motion to center
@@ -394,14 +396,16 @@ def main():
         print("✅ Center alignment complete!")
         print("=" * 70)
         
-        # Now visit the 4 corners
+        # Now visit the 4 corners (and back to first to complete the circuit)
         print("\n🎯 Now visiting the 4 corners of the charuco board...")
         board_width, board_height = detector.get_board_dimensions()
         corners = get_board_corners(board_width, board_height)
-        corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
+        # Add first corner again at the end to complete the circuit
+        corners.append(corners[0])
+        corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
         
         for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
-            print(f"\n--- Corner {i+1}/4: {corner_name} ---")
+            print(f"\n--- Corner {i+1}/5: {corner_name} ---")
             print(f"   Position in board frame: {corner}")
             
             # Compute alignment pose for this corner
@@ -427,10 +431,12 @@ def main():
             time.sleep(0.3)
         
         print("\n" + "=" * 70)
-        print("✅ SUCCESS: All corners visited successfully!")
+        print("✅ SUCCESS: Complete tour finished!")
         print("=" * 70)
-        print("\nThe robot has visited the center and all 4 corners of the charuco board.")
-        print(f"Each position maintained a {args.offset}m offset from the board surface.")
+        print("\nThe robot has traced the entire perimeter of the charuco board:")
+        print("  ✓ Visited center")
+        print("  ✓ Traced all 4 edges (top → right → bottom → left)")
+        print(f"  ✓ Maintained {args.offset}m offset from board surface")
         print("\nIf all positions aligned correctly, your hand-eye calibration is accurate!")
         
         # Return to home position

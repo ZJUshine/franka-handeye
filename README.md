@@ -75,7 +75,7 @@ python run_calibration.py --host <ROBOT_FCI_IP>
 This will automatically:
 1. Capture data from all 12 poses
 2. Compute the hand-eye calibration (with 3D visualization)
-3. Verify the calibration by visiting the board center and corners
+3. Verify the calibration by tracing the complete perimeter of the board
 
 **Optional arguments:**
 - `--host`: Robot FCI IP address (default: `172.16.0.2`)
@@ -154,7 +154,7 @@ python scripts/compute_calibration.py --plot
 
 #### Step 3: Verify Calibration (Optional but Recommended)
 
-To validate the calibration, you can run a verification script that uses the computed transformation to align the robot with the charuco board.
+To validate the calibration, you can run a verification script that uses the computed transformation to align the robot with the charuco board and trace its complete perimeter.
 
 ```bash
 python scripts/verify_calibration.py --host <ROBOT_FCI_IP>
@@ -162,16 +162,17 @@ python scripts/verify_calibration.py --host <ROBOT_FCI_IP>
 
 **Optional arguments:**
 - `--host`: Robot FCI IP address (default: `172.16.0.2`)
-- `--offset`: Distance from board in meters (default: `0.1`)
+- `--offset`: Distance from board in meters (default: `0.06`)
 - `--calibration`: Path to calibration result (default: `data/hand-eye-calibration-output/calibration_result.json`)
 
 This script will:
-1. Detect the charuco board from the current robot position
-2. Use the calibration to compute where the robot should move
-3. Move the camera to be positioned `offset` meters from the board, aligned with its center
-4. Prompt for confirmation before executing the motion
+1. Detect the charuco board from home position
+2. Show a 3D preview of the planned alignment
+3. Visit the board center
+4. Trace all 4 edges by visiting: Top-Left → Top-Right → Bottom-Right → Bottom-Left → Top-Left
+5. Return to home position
 
-**Safety:** The script includes two confirmation prompts and moves the robot slowly. Always ensure the workspace is clear and have the emergency stop ready.
+**Safety:** The script includes confirmation prompts and moves the robot at controlled speeds. Always ensure the workspace is clear and have the emergency stop ready.
 
 ## Workflow Summary
 

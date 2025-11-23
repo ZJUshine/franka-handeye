@@ -40,7 +40,7 @@ def main():
 This script automates the entire calibration process:
   1. Captures data from robot at 12 predefined poses
   2. Computes hand-eye calibration using captured data (with visualization)
-  3. Verifies calibration by visiting board center and corners
+  3. Verifies calibration by tracing the complete perimeter of the board
 
 Requirements:
   - franky-remote server must be running
@@ -66,7 +66,7 @@ Note: For more control, run individual scripts in scripts/ directory.
     print("\nThis script will run the complete calibration pipeline:")
     print("  1. Data Capture")
     print("  2. Calibration Computation (with 3D visualization)")
-    print("  3. Calibration Verification")
+    print("  3. Calibration Verification (traces board perimeter)")
     print("\n" + "=" * 70)
     
     response = input("\n➤ Press ENTER to begin or Ctrl+C to abort: ")
@@ -102,7 +102,7 @@ Note: For more control, run individual scripts in scripts/ directory.
     print("  ✓ Data captured from 12 robot poses")
     print("  ✓ Hand-eye calibration computed and visualized")
     print("  ✓ Result saved to: data/hand-eye-calibration-output/calibration_result.json")
-    print("  ✓ Calibration verified by visiting board center and corners")
+    print("  ✓ Calibration verified by tracing complete board perimeter")
     
     print("\nYou can now use the calibration result in your applications!")
     print("\n" + "=" * 70)
