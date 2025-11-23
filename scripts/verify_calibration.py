@@ -12,7 +12,7 @@ from pathlib import Path
 os.environ.setdefault("FRANKY_SERVER_IP", "192.168.122.100")
 
 from scipy.spatial.transform import Rotation as R
-from franky import Robot, CartesianMotion, Affine, JointMotion, Gripper
+from franky import Robot, CartesianMotion, Affine, JointMotion, Gripper, ReferenceType
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -251,7 +251,11 @@ def main():
         robot.move(JointMotion([0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7]))
         print("✓ Reached home pose")
         
-        # Close gripper
+        # Home and close gripper
+        print("🏠 Homing gripper...")
+        gripper.homing()
+        print("✓ Gripper homed")
+        
         print("🤏 Closing gripper...")
         gripper.move(0, 0.1)  # width=0 (closed), speed=0.1
         print("✓ Gripper closed")
@@ -311,15 +315,34 @@ def main():
         print(f"   xyz: {translation_list}")
         print(f"   quat (xyzw): {quaternion_list}")
         
-        # Final confirmation
+        # Show preview plot of planned alignment
+        print("\n📊 Displaying preview of planned alignment...")
+        print("   (Close the plot window to continue)")
+        
+        # Calculate frames for preview
+        R_target_cam_initial, _ = cv2.Rodrigues(rvec)
+        T_target_cam_initial = np.eye(4)
+        T_target_cam_initial[:3, :3] = R_target_cam_initial
+        T_target_cam_initial[:3, 3] = tvec.flatten()
+        
+        T_cam_base_initial = T_gripper_base_current @ T_cam_gripper
+        T_target_base = T_cam_base_initial @ T_target_cam_initial
+        
+        # For preview, use the TARGET gripper pose we computed
+        T_gripper_base_preview = T_gripper_base_desired
+        T_cam_base_preview = T_gripper_base_preview @ T_cam_gripper
+        T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
+        
+        plot_verification(T_gripper_base_preview, T_cam_gripper, T_target_cam_preview)
+        
+        # Confirmation after viewing plot
         print("\n" + "=" * 70)
-        input("➤ Press ENTER to execute motion or Ctrl+C to abort: ")
+        response = input("➤ Are you OK with this alignment? Press ENTER to execute motion or Ctrl+C to abort: ")
         
         # Execute absolute motion
         print("\n🤖 Moving robot to alignment pose...")
         target_affine = Affine(translation_list, quaternion_list)
-        motion = CartesianMotion(target_affine)
-        robot.relative_dynamics_factor = 0.05
+        motion = CartesianMotion(target_affine, ReferenceType.Absolute, 0.1)
         robot.move(motion)
         
         print("✓ Motion complete!")
