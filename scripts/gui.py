@@ -263,11 +263,20 @@ def jog(axis, direction, btn_tag):
         twist = Twist(linear, angular)
         motion = CartesianVelocityMotion(twist, duration=Duration(10000))
         
-        # Safety
-        force_norm_cond = (Measure.FORCE_X * Measure.FORCE_X + 
-                           Measure.FORCE_Y * Measure.FORCE_Y + 
-                           Measure.FORCE_Z * Measure.FORCE_Z) > 100.0
-        reaction = Reaction(force_norm_cond, CartesianVelocityStopMotion(relative_dynamics_factor=0.05))
+        # Safety: Stop if any force component exceeds 5 N (absolute)
+        force_threshold = 5.0
+        force_x_exceeded = Measure.FORCE_X > force_threshold
+        force_x_neg_exceeded = Measure.FORCE_X < -force_threshold
+        force_y_exceeded = Measure.FORCE_Y > force_threshold
+        force_y_neg_exceeded = Measure.FORCE_Y < -force_threshold
+        force_z_exceeded = Measure.FORCE_Z > force_threshold
+        force_z_neg_exceeded = Measure.FORCE_Z < -force_threshold
+        
+        force_exceeded = (force_x_exceeded | force_x_neg_exceeded | 
+                          force_y_exceeded | force_y_neg_exceeded |
+                          force_z_exceeded | force_z_neg_exceeded)
+        
+        reaction = Reaction(force_exceeded, CartesianVelocityStopMotion(relative_dynamics_factor=0.05))
         motion.add_reaction(reaction)
         
         state.robot.move(motion, asynchronous=True)
