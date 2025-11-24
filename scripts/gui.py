@@ -149,6 +149,7 @@ class AppState:
         self.current_detection = (False, None, None)
         
         self.jogging_active = False
+        self.active_jog_button = None  # Track which button is currently active
         
         # Load previous config if exists to keep count? 
         # For now, we reset like the original script or check dirs.
@@ -231,12 +232,20 @@ def get_video_frame():
     state.last_frame = frame.copy()
     return frame
 
-def jog(axis, direction):
+def jog(axis, direction, btn_tag):
     """Start jogging motion. Called when button is pressed."""
-    if state.jogging_active or not state.robot:
+    if not state.robot:
+        print(f"Jog blocked: no robot connection")
         return
 
+    # If already jogging, stop the current motion first
+    if state.jogging_active:
+        print(f"Already jogging, stopping current motion before starting new one")
+        stop_jog()
+    
+    print(f"Starting jog: axis={axis}, direction={direction}, button={btn_tag}")
     state.jogging_active = True
+    state.active_jog_button = btn_tag
     
     try:
         state.robot.recover_from_errors()
@@ -252,7 +261,7 @@ def jog(axis, direction):
             angular[axis-3] = v_ang * direction
             
         twist = Twist(linear, angular)
-        motion = CartesianVelocityMotion(twist, duration=Duration(5000))
+        motion = CartesianVelocityMotion(twist, duration=Duration(10000))
         
         # Safety
         force_norm_cond = (Measure.FORCE_X * Measure.FORCE_X + 
@@ -262,6 +271,7 @@ def jog(axis, direction):
         motion.add_reaction(reaction)
         
         state.robot.move(motion, asynchronous=True)
+        print("Jog motion started successfully")
         
     except Exception as e:
         print(f"Jog Error: {e}")
@@ -271,13 +281,21 @@ def stop_jog():
     """Stop jogging motion. Called when button is released."""
     if not state.jogging_active or not state.robot:
         return
+    
+    print("Stopping jog motion...")
     try:
-        state.robot.stop()
+        # Execute a CartesianVelocityStopMotion to smoothly stop the robot
+        stop_motion = CartesianVelocityStopMotion(relative_dynamics_factor=0.9)
+        state.robot.move(stop_motion)
+        print("Stop motion executed")
         state.robot.recover_from_errors()
-    except:
-        pass
+        print("Robot errors recovered")
+    except Exception as e:
+        print(f"Error stopping jog: {e}")
     finally:
         state.jogging_active = False
+        state.active_jog_button = None
+        print("Jog state cleared")
 
 def capture_pose():
     if not state.robot or state.last_frame is None:
@@ -478,20 +496,7 @@ def create_ui():
                     joints_label = dpg.add_text("Joints: ---", tag="joints_label")
                     dpg.add_button(label="GO HOME", callback=go_home, width=300)
     
-    # Setup button callbacks for jog controls - use lambda factories to capture axis/sign
-    def make_jog_callback(axis, sign):
-        def callback():
-            btn_tag = f"jog_btn_{axis}_{sign}"
-            if not ui_state['jog_buttons_pressed'][btn_tag]:
-                ui_state['jog_buttons_pressed'][btn_tag] = True
-                jog(axis, sign)
-        return callback
-    
-    for btn_tag in ui_state['jog_buttons_pressed'].keys():
-        parts = btn_tag.split('_')
-        axis = int(parts[2])
-        sign = int(parts[3])
-        dpg.set_item_callback(btn_tag, make_jog_callback(axis, sign))
+    # Don't use callbacks - we'll check button state in the update loop instead
     
     dpg.setup_dearpygui()
     dpg.show_viewport()
@@ -542,13 +547,35 @@ def update_ui():
         dpg.set_value("status_label", "Disconnected")
         dpg.configure_item("status_label", color=[255, 0, 0])
     
-    # Check jog button states - stop if mouse button is released
-    if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
-        # Mouse button released, stop all active jogging
-        for btn_tag in list(ui_state['jog_buttons_pressed'].keys()):
+    # Handle jog button states - check each button to see if it's being held down
+    any_button_pressed = False
+    
+    for btn_tag in ui_state['jog_buttons_pressed'].keys():
+        # Check if this button is hovered and left mouse button is down
+        is_hovered = dpg.is_item_hovered(btn_tag)
+        is_mouse_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
+        button_held = is_hovered and is_mouse_down
+        
+        if button_held:
+            any_button_pressed = True
+            # Button is being held down
+            if not ui_state['jog_buttons_pressed'][btn_tag]:
+                # Button just pressed - start jogging
+                parts = btn_tag.split('_')
+                axis = int(parts[2])
+                sign = int(parts[3])
+                ui_state['jog_buttons_pressed'][btn_tag] = True
+                jog(axis, sign, btn_tag)
+        else:
+            # Button is not being held
             if ui_state['jog_buttons_pressed'][btn_tag]:
+                # Button was just released
                 ui_state['jog_buttons_pressed'][btn_tag] = False
-                stop_jog()
+    
+    # If no button is pressed and we're still jogging, stop
+    if state.jogging_active and not any_button_pressed:
+        print("No jog button held - stopping jog")
+        stop_jog()
 
 # --- Startup ---
 
