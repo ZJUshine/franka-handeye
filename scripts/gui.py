@@ -7,9 +7,8 @@ import cv2
 import pyrealsense2 as rs
 import json
 import shutil
-import base64
 from pathlib import Path
-from nicegui import ui, app
+import dearpygui.dearpygui as dpg
 
 # Set default server IP
 os.environ.setdefault("FRANKY_SERVER_IP", "192.168.122.100")
@@ -184,7 +183,7 @@ class AppState:
             self.robot.recover_from_errors()
             self.robot.relative_dynamics_factor = 0.05 # Low dynamics for manual
             
-            self.detector = CharucoDetector("charuco/calibration_board_parameters.yaml")
+            self.detector = CharucoDetector("config/calibration_board_parameters.yaml")
             
             # Reset output dir for fresh session as per original script behavior
             if self.output_dir.exists():
@@ -209,7 +208,8 @@ state = AppState()
 
 # --- Logic Functions ---
 
-def get_video_frame_base64():
+def get_video_frame():
+    """Get current video frame and update detection state. Returns frame as numpy array."""
     if not state.camera:
         return None
         
@@ -218,23 +218,21 @@ def get_video_frame_base64():
         return None
         
     # Detection
-    if state.detector:
+    if state.detector and state.K is not None and state.D is not None:
         valid, rvec, tvec, corners = state.detector.detect(frame, state.K, state.D)
         if valid:
             cv2.drawFrameAxes(frame, state.K, state.D, rvec, tvec, 0.1)
             state.current_detection = (True, rvec, tvec)
         else:
             state.current_detection = (False, None, None)
+    else:
+        state.current_detection = (False, None, None)
             
     state.last_frame = frame.copy()
-    
-    # Resize for web display (save bandwidth)
-    display_frame = cv2.resize(frame, (640, 360))
-    _, buffer = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-    b64 = base64.b64encode(buffer).decode('utf-8')
-    return f'data:image/jpeg;base64,{b64}'
+    return frame
 
-async def jog(axis, direction):
+def jog(axis, direction):
+    """Start jogging motion. Called when button is pressed."""
     if state.jogging_active or not state.robot:
         return
 
@@ -266,10 +264,11 @@ async def jog(axis, direction):
         state.robot.move(motion, asynchronous=True)
         
     except Exception as e:
-        ui.notify(f"Jog Error: {e}", type='negative')
+        print(f"Jog Error: {e}")
         state.jogging_active = False
 
-async def stop_jog():
+def stop_jog():
+    """Stop jogging motion. Called when button is released."""
     if not state.jogging_active or not state.robot:
         return
     try:
@@ -282,7 +281,7 @@ async def stop_jog():
 
 def capture_pose():
     if not state.robot or state.last_frame is None:
-        ui.notify("Cannot capture: Robot not connected or no video", type='warning')
+        print("Cannot capture: Robot not connected or no video")
         return
 
     try:
@@ -334,159 +333,222 @@ def capture_pose():
         with open(path, 'w') as f:
             f.write(yaml_content)
             
-        ui.notify(f"Captured Pose {pose_idx}!", type='positive')
+        print(f"Captured Pose {pose_idx}!")
         
         if state.captured_count >= state.target_captures:
-            ui.notify("Target captured count reached!", type='positive', close_button="OK")
+            print("Target captured count reached!")
             
     except Exception as e:
-        ui.notify(f"Capture Error: {e}", type='negative')
+        print(f"Capture Error: {e}")
 
 def go_home():
     if not state.robot: return
     try:
         state.robot.recover_from_errors()
         state.robot.move(JointMotion([0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7]), asynchronous=True)
-        ui.notify("Moving Home...", type='info')
+        print("Moving Home...")
     except Exception as e:
-        ui.notify(f"Home Error: {e}", type='negative')
+        print(f"Home Error: {e}")
 
 # --- UI Setup ---
 
-@ui.page('/')
-def main_page():
-    ui.colors(primary='#5898d4', secondary='#26a69a', accent='#9c27b0', positive='#21ba45', negative='#c10015', info='#31ccec', warning='#f2c037')
+# Global UI state
+ui_state = {
+    'video_texture': None,
+    'video_width': 640,
+    'video_height': 360,
+    'camera_init_attempted': False,
+    'jog_buttons_pressed': {}  # Track which jog buttons are currently pressed
+}
 
-    with ui.header().classes(replace='row items-center') as header:
-        ui.icon('precision_manufacturing', size='32px').classes('q-mr-sm text-white')
-        ui.label('Franka Hand-Eye Calibration').classes('text-h6 text-white')
-        ui.space()
-        status_label = ui.label('Connecting...').classes('text-white')
-
-    with ui.row().classes('w-full q-pa-md'):
-        # Left Column: Video
-        with ui.card().classes('w-2/3'):
-            ui.label('Camera Feed').classes('text-h6 q-mb-md')
-            video_image = ui.image().props('fit=scale-down').style('width: 100%; height: 500px; background-color: #000')
-            
-            with ui.row().classes('items-center q-mt-md'):
-                ui.icon('grid_on').classes('q-mr-sm')
-                detection_label = ui.label('Waiting for Charuco...').classes('text-subtitle1')
-                ui.space()
-                
-                def toggle_camera():
-                    if state.camera and state.camera.pipeline:
-                        state.camera.stop()
-                        cam_btn.props('icon=videocam color=positive')
-                        cam_btn.text = 'Start Camera'
-                    elif state.camera:
-                        # It will try to init in the loop
-                        pass 
-                        
-                cam_btn = ui.button('Start Camera', on_click=lambda: None).props('icon=videocam_off color=negative')
-                # We'll handle button state in loop actually or make it simpler
-                
-        # Right Column: Controls
-        with ui.column().classes('w-1/3 q-pl-md'):
-            
-            # Capture Status
-            with ui.card().classes('w-full q-mb-md'):
-                ui.label('Capture Status').classes('text-h6')
-                progress = ui.linear_progress(value=0).classes('q-my-md')
-                count_label = ui.label(f'Captured: 0 / {state.target_captures}').classes('text-subtitle1 text-bold')
-                
-                ui.button('Capture Pose', on_click=capture_pose, icon='camera').props('color=positive size=lg').classes('w-full')
-
-            # Jog Controls
-            with ui.card().classes('w-full q-mb-md'):
-                ui.label('Jog Controls').classes('text-h6 q-mb-sm')
-                ui.label('Hold to move').classes('text-caption text-grey q-mb-md')
-                
-                with ui.tabs().classes('w-full') as tabs:
-                    t_trans = ui.tab('Translation')
-                    t_rot = ui.tab('Rotation')
-
-                with ui.tab_panels(tabs, value=t_trans).classes('w-full'):
-                    with ui.tab_panel(t_trans):
-                        with ui.grid(columns=2).classes('w-full gap-2'):
-                            for label, axis, sign in [('X+', 0, 1), ('X-', 0, -1), 
-                                                    ('Y+', 1, 1), ('Y-', 1, -1), 
-                                                    ('Z+', 2, 1), ('Z-', 2, -1)]:
-                                btn = ui.button(label).props('push')
-                                # Bind press/release
-                                btn.on('mousedown', lambda _, a=axis, s=sign: jog(a, s))
-                                btn.on('mouseup', stop_jog)
-                                btn.on('mouseleave', stop_jog) # Safety if mouse leaves button while down
-
-                    with ui.tab_panel(t_rot):
-                        with ui.grid(columns=2).classes('w-full gap-2'):
-                            for label, axis, sign in [('RX+', 3, 1), ('RX-', 3, -1), 
-                                                    ('RY+', 4, 1), ('RY-', 4, -1), 
-                                                    ('RZ+', 5, 1), ('RZ-', 5, -1)]:
-                                btn = ui.button(label).props('push color=secondary')
-                                btn.on('mousedown', lambda _, a=axis, s=sign: jog(a, s))
-                                btn.on('mouseup', stop_jog)
-                                btn.on('mouseleave', stop_jog)
-
-            # Robot State
-            with ui.card().classes('w-full'):
-                ui.label('Robot State').classes('text-h6')
-                pos_label = ui.label('Pos: ---').classes('font-mono text-xs q-mb-xs')
-                joints_label = ui.label('Joints: ---').classes('font-mono text-xs q-mb-md')
-                ui.button('GO HOME', on_click=go_home, icon='home').props('color=warning outline').classes('w-full')
-
-    # Update Loop
-    camera_init_attempted = False
+def update_camera_texture(frame):
+    """Update the camera texture with a new frame."""
+    if frame is None or ui_state['video_texture'] is None:
+        return
     
-    async def update_loop():
-        nonlocal camera_init_attempted
-        
-        # Update Video
-        # Try to initialize camera if needed (only once)
-        if state.camera and not state.camera.pipeline and not camera_init_attempted:
-            camera_init_attempted = True
-            if state.camera.initialize():
-                # Once initialized, get intrinsics
-                state.K, state.D = state.camera.get_intrinsics_matrix()
-        
-        src = get_video_frame_base64()
-        if src:
-            video_image.set_source(src)
-            
-        # Update Detection Status
-        is_det, _, _ = state.current_detection
-        detection_label.text = "Charuco DETECTED" if is_det else "Charuco NOT Detected"
-        detection_label.classes(remove='text-red text-green', add='text-green' if is_det else 'text-red')
-        
-        # Update Counts
-        count_label.text = f'Captured: {state.captured_count} / {state.target_captures}'
-        progress.value = state.captured_count / state.target_captures
-        
-        # Update Robot State
-        if state.robot:
-            try:
-                s = state.robot.state
-                
-                # Pos
-                O_T_EE = s.O_T_EE
-                trans = O_T_EE.translation
-                pos_label.text = f"Pos: [{trans[0]:.3f}, {trans[1]:.3f}, {trans[2]:.3f}]"
-                
-                # Joints
-                q = s.q
-                q_str = ", ".join([f"{x:.2f}" for x in q])
-                joints_label.text = f"Joints: [{q_str}]"
-                
-                status_label.text = "Connected"
-                status_label.classes(remove='text-red', add='text-green')
-            except:
-                status_label.text = "Connection Lost"
-                status_label.classes(remove='text-green', add='text-red')
-        else:
-            status_label.text = "Disconnected"
-            status_label.classes(remove='text-green', add='text-red')
+    # Resize frame for display
+    display_frame = cv2.resize(frame, (ui_state['video_width'], ui_state['video_height']))
+    # Convert BGR to RGB
+    rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+    # Flip vertically (OpenCV uses top-left origin, DPG uses bottom-left)
+    rgb_frame = np.flipud(rgb_frame)
+    # Normalize to [0, 1] range
+    normalized = rgb_frame.astype(np.float32) / 255.0
+    # Flatten to 1D array (width * height * channels)
+    flat = normalized.flatten()
+    
+    dpg.set_value(ui_state['video_texture'], flat)
 
-    ui.timer(0.05, update_loop)
+def create_ui():
+    """Create the DearPyGui interface."""
+    dpg.create_context()
+    dpg.create_viewport(title='Franka Hand-Eye Calibration', width=1280, height=900)
+    
+    # Register texture for video display
+    with dpg.texture_registry(show=False):
+        # Create a placeholder texture (will be updated each frame)
+        ui_state['video_texture'] = dpg.add_raw_texture(
+            width=ui_state['video_width'],
+            height=ui_state['video_height'],
+            default_value=np.zeros((ui_state['video_height'], ui_state['video_width'], 3), dtype=np.float32).flatten(),
+            format=dpg.mvFormat_Float_rgb
+        )
+    
+    with dpg.window(label="Franka Hand-Eye Calibration", tag="primary_window"):
+        # Header
+        with dpg.group(horizontal=True):
+            dpg.add_text("Franka Hand-Eye Calibration")
+            dpg.add_spacing(count=1)
+            status_label = dpg.add_text("Connecting...", tag="status_label")
+        
+        dpg.add_separator()
+        
+        # Main content area
+        with dpg.group(horizontal=True):
+            # Left Column: Video Feed
+            with dpg.group():
+                dpg.add_text("Camera Feed")
+                dpg.add_image(ui_state['video_texture'], width=640, height=360, tag="video_image")
+                detection_label = dpg.add_text("Waiting for Charuco...", tag="detection_label")
+            
+            dpg.add_spacing(count=1)
+            
+            # Right Column: Controls
+            with dpg.group():
+                # Capture Status
+                with dpg.group():
+                    dpg.add_text("Capture Status")
+                    count_label = dpg.add_text(f"Captured: 0 / {state.target_captures}", tag="count_label")
+                    progress_bar = dpg.add_progress_bar(default_value=0.0, tag="progress_bar", width=300)
+                    dpg.add_button(label="Capture Pose", callback=capture_pose, width=300)
+                
+                dpg.add_spacing(count=2)
+                
+                # Jog Controls
+                with dpg.group():
+                    dpg.add_text("Jog Controls")
+                    dpg.add_text("Hold to move", color=[150, 150, 150])
+                    
+                    # Translation tab
+                    with dpg.group():
+                        dpg.add_text("Translation", color=[100, 150, 255])
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('X+', 0, 1), ('X-', 0, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('Y+', 1, 1), ('Y-', 1, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('Z+', 2, 1), ('Z-', 2, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                    
+                    dpg.add_spacing(count=1)
+                    
+                    # Rotation tab
+                    with dpg.group():
+                        dpg.add_text("Rotation", color=[100, 200, 150])
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('RX+', 3, 1), ('RX-', 3, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('RY+', 4, 1), ('RY-', 4, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                        with dpg.group(horizontal=True):
+                            for label, axis, sign in [('RZ+', 5, 1), ('RZ-', 5, -1)]:
+                                btn_tag = f"jog_btn_{axis}_{sign}"
+                                dpg.add_button(label=label, tag=btn_tag, width=140, height=40)
+                                ui_state['jog_buttons_pressed'][btn_tag] = False
+                
+                dpg.add_spacing(count=2)
+                
+                # Robot State
+                with dpg.group():
+                    dpg.add_text("Robot State")
+                    pos_label = dpg.add_text("Pos: ---", tag="pos_label")
+                    joints_label = dpg.add_text("Joints: ---", tag="joints_label")
+                    dpg.add_button(label="GO HOME", callback=go_home, width=300)
+    
+    # Setup button callbacks for jog controls - use lambda factories to capture axis/sign
+    def make_jog_callback(axis, sign):
+        def callback():
+            btn_tag = f"jog_btn_{axis}_{sign}"
+            if not ui_state['jog_buttons_pressed'][btn_tag]:
+                ui_state['jog_buttons_pressed'][btn_tag] = True
+                jog(axis, sign)
+        return callback
+    
+    for btn_tag in ui_state['jog_buttons_pressed'].keys():
+        parts = btn_tag.split('_')
+        axis = int(parts[2])
+        sign = int(parts[3])
+        dpg.set_item_callback(btn_tag, make_jog_callback(axis, sign))
+    
+    dpg.setup_dearpygui()
+    dpg.show_viewport()
+    dpg.set_primary_window("primary_window", True)
+
+def update_ui():
+    """Update loop called each frame."""
+    # Try to initialize camera if needed
+    if state.camera and not state.camera.pipeline and not ui_state['camera_init_attempted']:
+        ui_state['camera_init_attempted'] = True
+        if state.camera.initialize():
+            state.K, state.D = state.camera.get_intrinsics_matrix()
+    
+    # Update video frame
+    frame = get_video_frame()
+    if frame is not None:
+        update_camera_texture(frame)
+    
+    # Update detection status
+    is_det, _, _ = state.current_detection
+    detection_text = "Charuco DETECTED" if is_det else "Charuco NOT Detected"
+    detection_color = [0, 255, 0] if is_det else [255, 0, 0]
+    dpg.set_value("detection_label", detection_text)
+    dpg.configure_item("detection_label", color=detection_color)
+    
+    # Update capture count
+    dpg.set_value("count_label", f"Captured: {state.captured_count} / {state.target_captures}")
+    dpg.set_value("progress_bar", state.captured_count / state.target_captures)
+    
+    # Update robot state
+    if state.robot:
+        try:
+            s = state.robot.state
+            O_T_EE = s.O_T_EE
+            trans = O_T_EE.translation
+            dpg.set_value("pos_label", f"Pos: [{trans[0]:.3f}, {trans[1]:.3f}, {trans[2]:.3f}]")
+            
+            q = s.q
+            q_str = ", ".join([f"{x:.2f}" for x in q])
+            dpg.set_value("joints_label", f"Joints: [{q_str}]")
+            
+            dpg.set_value("status_label", "Connected")
+            dpg.configure_item("status_label", color=[0, 255, 0])
+        except:
+            dpg.set_value("status_label", "Connection Lost")
+            dpg.configure_item("status_label", color=[255, 0, 0])
+    else:
+        dpg.set_value("status_label", "Disconnected")
+        dpg.configure_item("status_label", color=[255, 0, 0])
+    
+    # Check jog button states - stop if mouse button is released
+    if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+        # Mouse button released, stop all active jogging
+        for btn_tag in list(ui_state['jog_buttons_pressed'].keys()):
+            if ui_state['jog_buttons_pressed'][btn_tag]:
+                ui_state['jog_buttons_pressed'][btn_tag] = False
+                stop_jog()
 
 # --- Startup ---
 
@@ -500,11 +562,16 @@ def run():
     else:
         print("System Initialization Failed.")
 
-    app.on_shutdown(state.cleanup)
+    create_ui()
     
-    # Native mode disabled due to missing system dependencies
-    # ui.run(title="Franka Calibration", favicon="🤖", native=True, window_size=(1280, 900))
-    ui.run(title="Franka Calibration", favicon="🤖")
+    # Main render loop
+    while dpg.is_dearpygui_running():
+        update_ui()
+        dpg.render_dearpygui_frame()
+    
+    # Cleanup
+    state.cleanup()
+    dpg.destroy_context()
 
 if __name__ in {"__main__", "__mp_main__"}:
     run()

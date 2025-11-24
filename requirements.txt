@@ -5,4 +5,5 @@ PyYAML
 scipy
 matplotlib
 Pillow
+dearpygui
 git+https://github.com/kvasios/franky-remote.git
