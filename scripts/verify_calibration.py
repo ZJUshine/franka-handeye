@@ -278,6 +278,16 @@ def run_verification(
             print("\n📊 Displaying preview of center alignment...")
             print("   (Close the plot window to continue)")
             plot_verification(T_gripper_base_desired, T_cam_gripper, T_target_cam_preview)
+            
+            # Confirm before moving
+            print("\n" + "=" * 50)
+            print("📋 Preview complete. Ready to move the robot.")
+            print("=" * 50)
+            try:
+                input("\n➤ Press ENTER to proceed with motion or Ctrl+C to abort: ")
+            except KeyboardInterrupt:
+                print("\n\n❌ Motion aborted by user")
+                return False
         
         # Move to center
         move_to_board_position(

@@ -22,6 +22,7 @@ try:
         Measure,
         Affine,
         ReferenceType,
+        RelativeDynamicsFactor,
         Gripper as FrankyGripper,
     )
     FRANKY_AVAILABLE = True
@@ -38,13 +39,26 @@ class RobotController:
     host : str
         Robot FCI IP address.
     dynamics_factor : float
-        Relative dynamics factor (0.0 to 1.0). Lower = slower/safer.
+        Global relative dynamics factor (0.0 to 1.0). Lower = slower/safer.
+    cartesian_velocity : float
+        Velocity factor for Cartesian motions (0.0 to 1.0).
+    cartesian_acceleration : float
+        Acceleration factor for Cartesian motions (0.0 to 1.0).
+    cartesian_jerk : float
+        Jerk factor for Cartesian motions (0.0 to 1.0). Lower = smoother.
     """
     
     # Default home position (joint angles in radians)
     HOME_POSE = [0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7]
     
-    def __init__(self, host: str, dynamics_factor: float = 0.1):
+    def __init__(
+        self, 
+        host: str, 
+        dynamics_factor: float = 0.1,
+        cartesian_velocity: float = 0.8,
+        cartesian_acceleration: float = 0.5,
+        cartesian_jerk: float = 0.1
+    ):
         if not FRANKY_AVAILABLE:
             raise RuntimeError("franky is not installed")
             
@@ -54,6 +68,11 @@ class RobotController:
         self._robot.relative_dynamics_factor = dynamics_factor
         self._gripper = None
         self._jogging = False
+        
+        # Cartesian motion dynamics (conservative defaults to avoid discontinuity errors)
+        self.cartesian_velocity = cartesian_velocity
+        self.cartesian_acceleration = cartesian_acceleration
+        self.cartesian_jerk = cartesian_jerk
     
     @property
     def robot(self) -> "FrankyRobot":
@@ -145,7 +164,7 @@ class RobotController:
         self, 
         position: list[float], 
         quaternion: list[float],
-        elbow: float = 0.5,
+        relative_dynamics_factor: "RelativeDynamicsFactor | float | None" = None,
         asynchronous: bool = False
     ):
         """
@@ -157,13 +176,21 @@ class RobotController:
             [x, y, z] position in meters.
         quaternion : list
             [x, y, z, w] quaternion orientation.
-        elbow : float
-            Elbow configuration parameter.
+        relative_dynamics_factor : RelativeDynamicsFactor, float, or None
+            Dynamics factor for this motion. Uses instance defaults if None.
         asynchronous : bool
             If True, return immediately.
         """
         target = Affine(position, quaternion)
-        motion = CartesianMotion(target, ReferenceType.Absolute, elbow)
+        if relative_dynamics_factor is not None:
+            dynamics = relative_dynamics_factor
+        else:
+            dynamics = RelativeDynamicsFactor(
+                velocity=self.cartesian_velocity,
+                acceleration=self.cartesian_acceleration,
+                jerk=self.cartesian_jerk
+            )
+        motion = CartesianMotion(target, ReferenceType.Absolute, dynamics)
         self._robot.move(motion, asynchronous=asynchronous)
     
     def go_home(self, asynchronous: bool = False):
