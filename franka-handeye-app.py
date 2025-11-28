@@ -16,6 +16,8 @@ Usage:
     python franka-handeye-app.py --host 172.16.0.2
 """
 
+import gc
+import importlib
 import os
 import sys
 import time
@@ -258,6 +260,10 @@ class AppState:
         """
         Attempt to connect/reconnect to the robot.
         
+        Always creates a fresh connection from scratch, properly cleaning up
+        any existing connection first. Forces reimport of franky since it
+        establishes gRPC connection at import time.
+        
         Returns
         -------
         bool
@@ -265,9 +271,47 @@ class AppState:
         """
         self.robot_error = None
         
+        # Clean up existing robot connection if any
+        if self.robot is not None:
+            print("Cleaning up existing robot connection...")
+            try:
+                # Try to stop any ongoing motion
+                if hasattr(self.robot, '_jogging') and self.robot._jogging:
+                    self.robot.clear_jog_state()
+                # Explicitly delete the underlying FrankyRobot if accessible
+                if hasattr(self.robot, '_robot'):
+                    del self.robot._robot
+                if hasattr(self.robot, '_gripper') and self.robot._gripper is not None:
+                    del self.robot._gripper
+            except Exception as cleanup_err:
+                print(f"Cleanup warning: {cleanup_err}")
+            
+            # Delete the controller and force garbage collection
+            self.robot = None
+            gc.collect()
+            
+            # Force reimport of franky - it establishes gRPC connection at import time
+            print("Reloading franky module for fresh gRPC connection...")
+            franky_modules = [key for key in sys.modules.keys() if key == 'franky' or key.startswith('franky.')]
+            for mod_name in franky_modules:
+                del sys.modules[mod_name]
+            
+            # Also reload the robot module that imports franky
+            if 'franka_handeye.robot' in sys.modules:
+                del sys.modules['franka_handeye.robot']
+            
+            # Force garbage collection again after module cleanup
+            gc.collect()
+            
+            # Brief delay to allow OS to release network resources
+            time.sleep(0.5)
+            print("Cleanup complete.")
+        
         try:
             print(f"Connecting to Robot at {self.host}...")
-            self.robot = RobotController(self.host, dynamics_factor=0.05)
+            # Import fresh RobotController after module cleanup
+            from franka_handeye.robot import RobotController as FreshRobotController
+            self.robot = FreshRobotController(self.host, dynamics_factor=0.05)
             print("Robot connected successfully!")
             return True
         except Exception as e:
@@ -318,7 +362,7 @@ ui_state = {
 def log(message: str, level: str = "info"):
     """Add a message to the log."""
     timestamp = time.strftime("%H:%M:%S")
-    prefix = {"info": "ℹ️", "success": "✓", "warning": "⚠️", "error": "✗"}.get(level, "•")
+    prefix = {"info": "[INFO]", "success": "[OK]", "warning": "[WARN]", "error": "[ERR]"}.get(level, "[LOG]")
     formatted = f"[{timestamp}] {prefix} {message}"
     ui_state['log_messages'].append(formatted)
     # Keep only last 100 messages
@@ -638,7 +682,7 @@ def run_calibration():
         )
         state.T_cam_gripper = T_cam2gripper
         
-        log(f"Calibration complete! Error: {mean_err*1000:.2f}mm ± {std_err*1000:.2f}mm", "success")
+        log(f"Calibration complete! Error: {mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm", "success")
         
         # Show 3D plot
         # Use last captured pose for visualization
@@ -772,9 +816,9 @@ def move_to_board_position(robot, T_gripper_base_current, T_cam_gripper, rvec, t
     translation = T_gripper_base_desired[:3, 3].tolist()
     quaternion = R.from_matrix(T_gripper_base_desired[:3, :3]).as_quat().tolist()
     
-    log(f"🤖 Moving to {position_name}...", "info")
+    log(f"[ROBOT] Moving to {position_name}...", "info")
     robot.move_cartesian(translation, quaternion, asynchronous=False)
-    log(f"✓ Reached {position_name}", "success")
+    log(f"[OK] Reached {position_name}", "success")
 
 
 def run_homing_and_detection():
@@ -788,21 +832,21 @@ def run_homing_and_detection():
         return False, None, None
     
     # Step 2: Go to home pose
-    log("🤖 Moving to home pose...", "info")
+    log("[ROBOT] Moving to home pose...", "info")
     state.robot.go_home()
-    log("✓ Reached home pose", "success")
+    log("[OK] Reached home pose", "success")
     
     # Step 3: Home and close gripper
-    log("🏠 Homing gripper...", "info")
+    log("[HOME] Homing gripper...", "info")
     state.robot.home_gripper()
-    log("✓ Gripper homed", "success")
+    log("[OK] Gripper homed", "success")
     
-    log("🤏 Closing gripper...", "info")
+    log("[GRIP] Closing gripper...", "info")
     state.robot.close_gripper()
-    log("✓ Gripper closed", "success")
+    log("[OK] Gripper closed", "success")
     
     # Step 4: Wait and detect charuco board from home position
-    log("📷 Detecting charuco board from home position...", "info")
+    log("[CAM] Detecting charuco board from home position...", "info")
     time.sleep(1.0)  # Wait for robot to settle
     
     frame = state.camera.get_frame()
@@ -814,10 +858,10 @@ def run_homing_and_detection():
     valid, rvec, tvec, _ = state.detector.detect(frame, K, D)
     
     if not valid:
-        log("❌ ChArUco board not detected! Make sure it's visible from home position.", "error")
+        log("[ERR] ChArUco board not detected! Make sure it's visible from home position.", "error")
         return False, None, None
     
-    log(f"✓ ChArUco detected at position: {tvec.flatten()}", "success")
+    log(f"[OK] ChArUco detected at position: {tvec.flatten()}", "success")
     return True, rvec, tvec
 
 
@@ -847,7 +891,7 @@ def check_frames_visualizer_thread():
         T_target_cam[:3, :3] = R_target_cam
         T_target_cam[:3, 3] = tvec.flatten()
         
-        log("📊 Showing frame plot...", "info")
+        log("[PLOT] Showing frame plot...", "info")
         log("   Close window to finish", "info")
         
         # Show plot
@@ -858,7 +902,7 @@ def check_frames_visualizer_thread():
             title="Current Frame Check\nClose window to finish"
         )
         
-        log("✓ Frame check complete", "success")
+        log("[OK] Frame check complete", "success")
 
     except Exception as e:
         log(f"Frame check error: {e}", "error")
@@ -889,7 +933,7 @@ def verify_visit_corners_thread():
         valid, rvec, tvec = state.current_detection
         
         if not valid:
-            log("❌ No valid ChArUco detection!", "error")
+            log("[ERR] No valid ChArUco detection!", "error")
             log("   Please run 'CHECK CURRENT FRAMES' first or ensure board is visible.", "error")
             return
 
@@ -898,17 +942,17 @@ def verify_visit_corners_thread():
         center_point = state.detector.get_board_center()
         board_width, board_height = state.detector.board_dimensions
         
-        log(f"🧮 Computing path to board center...", "info")
+        log(f"[CALC] Computing path to board center...", "info")
         
         # Move to board center
         move_to_board_position(
             state.robot, T_gripper_base_current, state.T_cam_gripper, 
             rvec, tvec, offset, center_point, "board center"
         )
-        log("✅ Center alignment complete!", "success")
+        log("[OK] Center alignment complete!", "success")
         
         # Tour corners
-        log("🎯 Now visiting the 4 corners of the charuco board...", "info")
+        log("[TARGET] Now visiting the 4 corners of the charuco board...", "info")
         corners = state.detector.get_board_corners()
         corners.append(corners[0])  # Return to first corner
         corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
@@ -942,15 +986,15 @@ def verify_visit_corners_thread():
             )
             time.sleep(0.3)
         
-        log("✅ Corner tour complete!", "success")
+        log("[OK] Corner tour complete!", "success")
         
         # Return to home
-        log("🏠 Returning to home position...", "info")
+        log("[HOME] Returning to home position...", "info")
         state.robot.go_home()
         state.robot.home_gripper()
-        log("✓ Returned to home position", "success")
+        log("[OK] Returned to home position", "success")
         
-        log("🎉 Verification complete!", "success")
+        log("[DONE] Verification complete!", "success")
         
     except Exception as e:
         log(f"Visit error: {e}", "error")
@@ -1042,7 +1086,7 @@ def create_ui():
         with dpg.group(horizontal=True):
             
             # ===== LEFT COLUMN: Video & Detection =====
-            with dpg.child_window(width=680, height=680, border=False):
+            with dpg.child_window(width=680, height=680, border=False, autosize_x=False):
                 dpg.add_text("CAMERA FEED", color=Theme.TEXT_SECONDARY)
                 dpg.add_spacer(height=4)
                 
@@ -1081,192 +1125,193 @@ def create_ui():
             dpg.add_spacer(width=16)
             
             # ===== RIGHT COLUMN: Controls =====
-            with dpg.child_window(width=660, height=680, border=False):
+            with dpg.child_window(width=660, height=680, border=False, autosize_x=False, horizontal_scrollbar=False):
                 
                 # Tab bar for different modes
-                with dpg.tab_bar():
-                    
-                    # ===== CAPTURE TAB =====
-                    with dpg.tab(label="  CAPTURE  "):
-                        dpg.add_spacer(height=8)
+                with dpg.group(width=640):
+                    with dpg.tab_bar():
                         
-                        # Capture status
-                        dpg.add_text("CAPTURE STATUS", color=Theme.TEXT_SECONDARY)
-                        dpg.add_spacer(height=8)
+                        # ===== CAPTURE TAB =====
+                        with dpg.tab(label="CAPTURE"):
+                            dpg.add_spacer(height=8)
                         
-                        with dpg.group(horizontal=True):
-                            dpg.add_text("Captured:", color=Theme.TEXT_MUTED)
-                            dpg.add_text("0", tag="capture_count")
-                            dpg.add_text("/", color=Theme.TEXT_MUTED)
-                            dpg.add_text(str(state.target_captures), tag="target_count")
-                        
-                        dpg.add_progress_bar(default_value=0.0, tag="capture_progress", width=620)
-                        
-                        dpg.add_spacer(height=16)
-                        
-                        # Capture buttons
-                        with dpg.group(horizontal=True):
-                            btn = dpg.add_button(label="AUTO RUN (FROM CONFIG)", callback=start_auto_capture, width=450, height=50)
-                            dpg.bind_item_theme(btn, ui_state['themes']['success'])
+                            # Capture status
+                            dpg.add_text("CAPTURE STATUS", color=Theme.TEXT_SECONDARY)
+                            dpg.add_spacer(height=8)
                             
-                            dpg.add_spacer(width=16)
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Captured:", color=Theme.TEXT_MUTED)
+                                dpg.add_text("0", tag="capture_count")
+                                dpg.add_text("/", color=Theme.TEXT_MUTED)
+                                dpg.add_text(str(state.target_captures), tag="target_count")
                             
-                            btn = dpg.add_button(label="STOP", callback=stop_auto_capture, width=150, height=50)
-                            dpg.bind_item_theme(btn, ui_state['themes']['danger'])
+                            dpg.add_progress_bar(default_value=0.0, tag="capture_progress", width=600)
                             
-                        dpg.add_spacer(height=16)
+                            dpg.add_spacer(height=16)
+                            
+                            # Capture buttons
+                            with dpg.group(horizontal=True):
+                                btn = dpg.add_button(label="AUTO RUN (FROM CONFIG)", callback=start_auto_capture, width=440, height=50)
+                                dpg.bind_item_theme(btn, ui_state['themes']['success'])
+                                
+                                dpg.add_spacer(width=16)
+                                
+                                btn = dpg.add_button(label="STOP", callback=stop_auto_capture, width=140, height=50)
+                                dpg.bind_item_theme(btn, ui_state['themes']['danger'])
+                                
+                            dpg.add_spacer(height=16)
 
-                        with dpg.group(horizontal=True):
-                            btn = dpg.add_button(label="CAPTURE POSE", callback=capture_pose, width=300, height=50)
+                            with dpg.group(horizontal=True):
+                                btn = dpg.add_button(label="CAPTURE POSE", callback=capture_pose, width=290, height=50)
+                                dpg.bind_item_theme(btn, ui_state['themes']['accent'])
+                                
+                                dpg.add_spacer(width=16)
+                                
+                                btn = dpg.add_button(label="CLEAR ALL", callback=clear_captures, width=290, height=50)
+                                dpg.bind_item_theme(btn, ui_state['themes']['danger'])
+                            
+                            dpg.add_spacer(height=24)
+                            dpg.add_separator()
+                            dpg.add_spacer(height=16)
+                            
+                            # Jog controls
+                            dpg.add_text("JOG CONTROLS", color=Theme.TEXT_SECONDARY)
+                            dpg.add_text("Hold buttons to move robot", color=Theme.TEXT_MUTED)
+                            dpg.add_spacer(height=12)
+                            
+                            # Translation controls
+                            with dpg.group(horizontal=True):
+                                with dpg.group():
+                                    dpg.add_text("Translation", color=Theme.ACCENT_PRIMARY)
+                                    dpg.add_spacer(height=4)
+                                    
+                                    with dpg.group(horizontal=True):
+                                        dpg.add_text("X:", color=Theme.TEXT_MUTED, indent=4)
+                                        create_jog_button("-", 0, -1)
+                                        create_jog_button("+", 0, 1)
+                                        dpg.add_spacer(width=20)
+                                        dpg.add_text("Y:", color=Theme.TEXT_MUTED)
+                                        create_jog_button("-", 1, -1)
+                                        create_jog_button("+", 1, 1)
+                                        dpg.add_spacer(width=20)
+                                        dpg.add_text("Z:", color=Theme.TEXT_MUTED)
+                                        create_jog_button("-", 2, -1)
+                                        create_jog_button("+", 2, 1)
+                            
+                            dpg.add_spacer(height=12)
+                            
+                            # Rotation controls
+                            with dpg.group(horizontal=True):
+                                with dpg.group():
+                                    dpg.add_text("Rotation", color=Theme.ACCENT_SECONDARY)
+                                    dpg.add_spacer(height=4)
+                                    
+                                    with dpg.group(horizontal=True):
+                                        dpg.add_text("Rx:", color=Theme.TEXT_MUTED)
+                                        create_jog_button("-", 3, -1)
+                                        create_jog_button("+", 3, 1)
+                                        dpg.add_spacer(width=16)
+                                        dpg.add_text("Ry:", color=Theme.TEXT_MUTED)
+                                        create_jog_button("-", 4, -1)
+                                        create_jog_button("+", 4, 1)
+                                        dpg.add_spacer(width=16)
+                                        dpg.add_text("Rz:", color=Theme.TEXT_MUTED)
+                                        create_jog_button("-", 5, -1)
+                                        create_jog_button("+", 5, 1)
+                            
+                            dpg.add_spacer(height=24)
+                            
+                            # Home button
+                            btn = dpg.add_button(label="GO HOME", callback=go_home, width=600, height=40)
+                            dpg.bind_item_theme(btn, ui_state['themes']['success'])
+                        
+                        # ===== CALIBRATE TAB =====
+                        with dpg.tab(label="CALIBRATE"):
+                            dpg.add_spacer(height=8)
+                            
+                            dpg.add_text("CALIBRATION", color=Theme.TEXT_SECONDARY)
+                            dpg.add_spacer(height=8)
+                            
+                            dpg.add_text(
+                                "Compute hand-eye calibration from captured poses.\n"
+                                "Requires at least 12 poses with ChArUco detection.",
+                                color=Theme.TEXT_MUTED, wrap=580
+                            )
+                            
+                            dpg.add_spacer(height=16)
+                            
+                            btn = dpg.add_button(label="RUN CALIBRATION", callback=run_calibration, width=600, height=50)
                             dpg.bind_item_theme(btn, ui_state['themes']['accent'])
                             
-                            dpg.add_spacer(width=16)
+                            dpg.add_spacer(height=24)
+                            dpg.add_separator()
+                            dpg.add_spacer(height=16)
                             
-                            btn = dpg.add_button(label="CLEAR ALL", callback=clear_captures, width=300, height=50)
-                            dpg.bind_item_theme(btn, ui_state['themes']['danger'])
-                        
-                        dpg.add_spacer(height=24)
-                        dpg.add_separator()
-                        dpg.add_spacer(height=16)
-                        
-                        # Jog controls
-                        dpg.add_text("JOG CONTROLS", color=Theme.TEXT_SECONDARY)
-                        dpg.add_text("Hold buttons to move robot", color=Theme.TEXT_MUTED)
-                        dpg.add_spacer(height=12)
-                        
-                        # Translation controls
-                        with dpg.group(horizontal=True):
-                            with dpg.group():
-                                dpg.add_text("Translation", color=Theme.ACCENT_PRIMARY)
+                            # Calibration results display
+                            dpg.add_text("CALIBRATION RESULT", color=Theme.TEXT_SECONDARY)
+                            dpg.add_spacer(height=8)
+                            
+                            with dpg.child_window(width=600, height=200, border=True):
+                                dpg.add_text("Status:", color=Theme.TEXT_MUTED)
+                                dpg.add_text("No calibration loaded", tag="calib_status")
+                                dpg.add_spacer(height=8)
+                                
+                                dpg.add_text("Translation (xyz):", color=Theme.TEXT_MUTED)
+                                dpg.add_text("---", tag="calib_translation")
                                 dpg.add_spacer(height=4)
                                 
-                                with dpg.group(horizontal=True):
-                                    dpg.add_text("X:", color=Theme.TEXT_MUTED, indent=4)
-                                    create_jog_button("-", 0, -1)
-                                    create_jog_button("+", 0, 1)
-                                    dpg.add_spacer(width=20)
-                                    dpg.add_text("Y:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("-", 1, -1)
-                                    create_jog_button("+", 1, 1)
-                                    dpg.add_spacer(width=20)
-                                    dpg.add_text("Z:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("-", 2, -1)
-                                    create_jog_button("+", 2, 1)
-                        
-                        dpg.add_spacer(height=12)
-                        
-                        # Rotation controls
-                        with dpg.group(horizontal=True):
-                            with dpg.group():
-                                dpg.add_text("Rotation", color=Theme.ACCENT_SECONDARY)
+                                dpg.add_text("Quaternion (xyzw):", color=Theme.TEXT_MUTED)
+                                dpg.add_text("---", tag="calib_quaternion")
                                 dpg.add_spacer(height=4)
                                 
-                                with dpg.group(horizontal=True):
-                                    dpg.add_text("Rx:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("-", 3, -1)
-                                    create_jog_button("+", 3, 1)
-                                    dpg.add_spacer(width=16)
-                                    dpg.add_text("Ry:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("-", 4, -1)
-                                    create_jog_button("+", 4, 1)
-                                    dpg.add_spacer(width=16)
-                                    dpg.add_text("Rz:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("-", 5, -1)
-                                    create_jog_button("+", 5, 1)
+                                dpg.add_text("Consistency Error:", color=Theme.TEXT_MUTED)
+                                dpg.add_text("---", tag="calib_error")
                         
-                        dpg.add_spacer(height=24)
-                        
-                        # Home button
-                        btn = dpg.add_button(label="GO HOME", callback=go_home, width=620, height=40)
-                        dpg.bind_item_theme(btn, ui_state['themes']['success'])
-                    
-                    # ===== CALIBRATE TAB =====
-                    with dpg.tab(label="  CALIBRATE  "):
-                        dpg.add_spacer(height=8)
-                        
-                        dpg.add_text("CALIBRATION", color=Theme.TEXT_SECONDARY)
-                        dpg.add_spacer(height=8)
-                        
-                        dpg.add_text(
-                            "Compute hand-eye calibration from captured poses.\n"
-                            "Requires at least 12 poses with ChArUco detection.",
-                            color=Theme.TEXT_MUTED, wrap=600
-                        )
-                        
-                        dpg.add_spacer(height=16)
-                        
-                        btn = dpg.add_button(label="RUN CALIBRATION", callback=run_calibration, width=620, height=50)
-                        dpg.bind_item_theme(btn, ui_state['themes']['accent'])
-                        
-                        dpg.add_spacer(height=24)
-                        dpg.add_separator()
-                        dpg.add_spacer(height=16)
-                        
-                        # Calibration results display
-                        dpg.add_text("CALIBRATION RESULT", color=Theme.TEXT_SECONDARY)
-                        dpg.add_spacer(height=8)
-                        
-                        with dpg.child_window(width=620, height=200, border=True):
-                            dpg.add_text("Status:", color=Theme.TEXT_MUTED)
-                            dpg.add_text("No calibration loaded", tag="calib_status")
+                        # ===== VERIFY TAB =====
+                        with dpg.tab(label="VERIFY"):
                             dpg.add_spacer(height=8)
                             
-                            dpg.add_text("Translation (xyz):", color=Theme.TEXT_MUTED)
-                            dpg.add_text("---", tag="calib_translation")
-                            dpg.add_spacer(height=4)
-                            
-                            dpg.add_text("Quaternion (xyzw):", color=Theme.TEXT_MUTED)
-                            dpg.add_text("---", tag="calib_quaternion")
-                            dpg.add_spacer(height=4)
-                            
-                            dpg.add_text("Consistency Error:", color=Theme.TEXT_MUTED)
-                            dpg.add_text("---", tag="calib_error")
-                    
-                    # ===== VERIFY TAB =====
-                    with dpg.tab(label="  VERIFY  "):
-                        dpg.add_spacer(height=8)
-                        
-                        dpg.add_text("VERIFICATION", color=Theme.TEXT_SECONDARY)
-                        dpg.add_spacer(height=8)
-                        
-                        dpg.add_text(
-                            "Verify calibration by aligning the robot with the ChArUco board.\n\n"
-                            "Functions:\n"
-                            "• CHECK CURRENT FRAMES: Home Robot -> Detect -> Show Plot (No further movement)\n"
-                            "• VISIT CORNERS: Uses detection from 'Check' to Visit Board Center & Corners -> Home",
-                            color=Theme.TEXT_MUTED, wrap=600
-                        )
-                        
-                        dpg.add_spacer(height=16)
-                        
-                        with dpg.group(horizontal=True):
-                            btn_check = dpg.add_button(label="CHECK CURRENT FRAMES", callback=check_frames_visualizer, width=300, height=50)
-                            dpg.bind_item_theme(btn_check, ui_state['themes']['accent'])
-                            
-                            dpg.add_spacer(width=20)
-                            
-                            btn_visit = dpg.add_button(label="VISIT CORNERS", callback=start_visit_corners, width=300, height=50)
-                            dpg.bind_item_theme(btn_visit, ui_state['themes']['accent'])
-                        
-                        dpg.add_spacer(height=24)
-                        dpg.add_separator()
-                        dpg.add_spacer(height=16)
-                        
-                        # Verification info
-                        dpg.add_text("VERIFICATION STATUS", color=Theme.TEXT_SECONDARY)
-                        dpg.add_spacer(height=8)
-                        
-                        with dpg.child_window(width=620, height=150, border=True):
-                            dpg.add_text("Calibration:", color=Theme.TEXT_MUTED)
-                            dpg.add_text("Not loaded", tag="verify_calib_status", color=Theme.ACCENT_WARNING)
+                            dpg.add_text("VERIFICATION", color=Theme.TEXT_SECONDARY)
                             dpg.add_spacer(height=8)
                             
-                            dpg.add_text("ChArUco Detection:", color=Theme.TEXT_MUTED)
-                            dpg.add_text("Not detected", tag="verify_detection_status", color=Theme.ACCENT_WARNING)
+                            dpg.add_text(
+                                "Verify calibration by aligning the robot with the ChArUco board.\n\n"
+                                "Functions:\n"
+                                "- CHECK CURRENT FRAMES: Home Robot -> Detect -> Show Plot (No further movement)\n"
+                                "- VISIT CORNERS: Uses detection from 'Check' to Visit Board Center & Corners -> Home",
+                                color=Theme.TEXT_MUTED, wrap=580
+                            )
+                            
+                            dpg.add_spacer(height=16)
+                            
+                            with dpg.group(horizontal=True):
+                                btn_check = dpg.add_button(label="CHECK CURRENT FRAMES", callback=check_frames_visualizer, width=290, height=50)
+                                dpg.bind_item_theme(btn_check, ui_state['themes']['accent'])
+                                
+                                dpg.add_spacer(width=20)
+                                
+                                btn_visit = dpg.add_button(label="VISIT CORNERS", callback=start_visit_corners, width=290, height=50)
+                                dpg.bind_item_theme(btn_visit, ui_state['themes']['accent'])
+                            
+                            dpg.add_spacer(height=24)
+                            dpg.add_separator()
+                            dpg.add_spacer(height=16)
+                            
+                            # Verification info
+                            dpg.add_text("VERIFICATION STATUS", color=Theme.TEXT_SECONDARY)
                             dpg.add_spacer(height=8)
                             
-                            dpg.add_text("Board Position (camera frame):", color=Theme.TEXT_MUTED)
-                            dpg.add_text("---", tag="verify_board_pos")
+                            with dpg.child_window(width=600, height=150, border=True):
+                                dpg.add_text("Calibration:", color=Theme.TEXT_MUTED)
+                                dpg.add_text("Not loaded", tag="verify_calib_status", color=Theme.ACCENT_WARNING)
+                                dpg.add_spacer(height=8)
+                                
+                                dpg.add_text("ChArUco Detection:", color=Theme.TEXT_MUTED)
+                                dpg.add_text("Not detected", tag="verify_detection_status", color=Theme.ACCENT_WARNING)
+                                dpg.add_spacer(height=8)
+                                
+                                dpg.add_text("Board Position (camera frame):", color=Theme.TEXT_MUTED)
+                                dpg.add_text("---", tag="verify_board_pos")
     
     dpg.setup_dearpygui()
     dpg.show_viewport()
@@ -1320,7 +1365,7 @@ def update_ui():
             dpg.set_value("robot_status", "Error")
             dpg.configure_item("robot_status", color=Theme.ACCENT_WARNING)
             dpg.configure_item("reconnect_btn", show=True)
-            dpg.set_value("robot_error_msg", f"  ⚠ Communication error - try reconnecting")
+            dpg.set_value("robot_error_msg", f"  [WARN] Communication error - try reconnecting")
             dpg.configure_item("robot_error_msg", show=True)
     else:
         dpg.set_value("robot_status", "Disconnected")
@@ -1330,7 +1375,7 @@ def update_ui():
         dpg.set_value("joints_display", "--- (robot disconnected)")
         # Show error message if we have one
         if state.robot_error:
-            dpg.set_value("robot_error_msg", f"  ⚠ {state.robot_error}")
+            dpg.set_value("robot_error_msg", f"  [WARN] {state.robot_error}")
             dpg.configure_item("robot_error_msg", show=True)
         else:
             dpg.configure_item("robot_error_msg", show=False)
@@ -1355,7 +1400,7 @@ def update_ui():
         
         dpg.set_value("calib_translation", f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}]")
         dpg.set_value("calib_quaternion", f"[{quat[0]:.4f}, {quat[1]:.4f}, {quat[2]:.4f}, {quat[3]:.4f}]")
-        dpg.set_value("calib_error", f"{mean_err*1000:.2f}mm ± {std_err*1000:.2f}mm")
+        dpg.set_value("calib_error", f"{mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm")
         
         dpg.set_value("verify_calib_status", "Loaded")
         dpg.configure_item("verify_calib_status", color=Theme.ACCENT_SUCCESS)
