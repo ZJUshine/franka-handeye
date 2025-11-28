@@ -6,7 +6,8 @@ Computes hand-eye calibration from captured data.
 Can be run standalone or imported as a module.
 
 Usage:
-    python scripts/compute_calibration.py --data data/captured-data --plot
+    python scripts/compute_calibration.py --data data/captured-data
+    python scripts/compute_calibration.py --no-plot  # disable visualization
 """
 
 import sys
@@ -185,14 +186,14 @@ def main():
     parser = argparse.ArgumentParser(description="Compute Hand-Eye Calibration")
     parser.add_argument("--data", default="data/captured-data", help="Directory with captured data")
     parser.add_argument("--output", default="data/hand-eye-calibration-output", help="Output directory")
-    parser.add_argument("--plot", action="store_true", help="Show 3D plot of frames")
+    parser.add_argument("--no-plot", action="store_true", help="Disable 3D plot of frames")
     args = parser.parse_args()
 
     print("=" * 60)
     print("Franka Hand-Eye Calibration - Compute")
     print("=" * 60)
     
-    result = run_calibration(args.data, args.output, args.plot)
+    result = run_calibration(args.data, args.output, show_plot=not args.no_plot)
     
     if result:
         print("\n" + "=" * 60)

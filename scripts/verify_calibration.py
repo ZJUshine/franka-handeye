@@ -257,12 +257,13 @@ def run_verification(
         print(f"   Board dimensions: {board_width:.3f}m x {board_height:.3f}m")
         print(f"   Center point in board frame: {center_point}")
         
-        # Show preview plot
-        if show_plot:
+        # Compute alignment pose
         T_gripper_base_desired = compute_alignment_pose(
-                T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, center_point
+            T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, center_point
         )
         
+        # Show preview plot
+        if show_plot:
             R_target_cam, _ = cv2.Rodrigues(rvec)
             T_target_cam = np.eye(4)
             T_target_cam[:3, :3] = R_target_cam
@@ -272,7 +273,7 @@ def run_verification(
             T_target_base = T_cam_base @ T_target_cam
             
             T_cam_base_preview = T_gripper_base_desired @ T_cam_gripper
-        T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
+            T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
         
             print("\n📊 Displaying preview of center alignment...")
             print("   (Close the plot window to continue)")
@@ -288,13 +289,13 @@ def run_verification(
         
         # Tour corners if requested
         if tour_corners:
-        print("\n🎯 Now visiting the 4 corners of the charuco board...")
+            print("\n🎯 Now visiting the 4 corners of the charuco board...")
             corners = detector.get_board_corners()
             corners.append(corners[0])  # Return to first corner
-        corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
+            corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
         
-        for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
-            print(f"\n--- Corner {i+1}/5: {corner_name} ---")
+            for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
+                print(f"\n--- Corner {i+1}/5: {corner_name} ---")
                 move_to_board_position(
                     robot, T_gripper_base_current, T_cam_gripper, rvec, tvec,
                     offset, corner, f"{corner_name} corner"

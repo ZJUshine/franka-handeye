@@ -30,6 +30,9 @@ import numpy as np
 import cv2
 
 
+MIN_REQUIRED_POSES = 12
+
+
 def validate_joint_poses(joint_poses: list) -> bool:
     """
     Validate that joint poses are properly formatted.
@@ -51,6 +54,12 @@ def validate_joint_poses(joint_poses: list) -> bool:
     """
     if not joint_poses:
         raise ValueError("No joint poses found")
+    
+    if len(joint_poses) < MIN_REQUIRED_POSES:
+        raise ValueError(
+            f"Insufficient joint poses: found {len(joint_poses)}, but at least "
+            f"{MIN_REQUIRED_POSES} are required for reliable hand-eye calibration"
+        )
     
     for i, pose in enumerate(joint_poses):
         if not isinstance(pose, list):
