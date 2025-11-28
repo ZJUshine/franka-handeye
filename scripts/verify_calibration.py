@@ -259,21 +259,21 @@ def run_verification(
         
         # Show preview plot
         if show_plot:
-            T_gripper_base_desired = compute_alignment_pose(
+        T_gripper_base_desired = compute_alignment_pose(
                 T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, center_point
-            )
-            
+        )
+        
             R_target_cam, _ = cv2.Rodrigues(rvec)
             T_target_cam = np.eye(4)
             T_target_cam[:3, :3] = R_target_cam
             T_target_cam[:3, 3] = tvec.flatten()
-            
+        
             T_cam_base = T_gripper_base_current @ T_cam_gripper
             T_target_base = T_cam_base @ T_target_cam
             
             T_cam_base_preview = T_gripper_base_desired @ T_cam_gripper
-            T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
-            
+        T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
+        
             print("\n📊 Displaying preview of center alignment...")
             print("   (Close the plot window to continue)")
             plot_verification(T_gripper_base_desired, T_cam_gripper, T_target_cam_preview)
@@ -288,19 +288,19 @@ def run_verification(
         
         # Tour corners if requested
         if tour_corners:
-            print("\n🎯 Now visiting the 4 corners of the charuco board...")
+        print("\n🎯 Now visiting the 4 corners of the charuco board...")
             corners = detector.get_board_corners()
             corners.append(corners[0])  # Return to first corner
-            corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
-            
-            for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
-                print(f"\n--- Corner {i+1}/5: {corner_name} ---")
+        corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
+        
+        for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
+            print(f"\n--- Corner {i+1}/5: {corner_name} ---")
                 move_to_board_position(
                     robot, T_gripper_base_current, T_cam_gripper, rvec, tvec,
                     offset, corner, f"{corner_name} corner"
                 )
                 time.sleep(0.3)
-            
+        
             print("\n✅ Corner tour complete!")
         
         # Return to home

@@ -32,7 +32,7 @@ setup(
     extras_require={
         "robot": [
             "franky-remote @ git+https://github.com/kvasios/franky-remote.git",
-        ],
+    ],
     },
     entry_points={
         "console_scripts": [

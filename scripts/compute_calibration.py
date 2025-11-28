@@ -128,18 +128,18 @@ def run_calibration(
     """
     # Load data
     R_g2b, t_g2b, R_t2c, t_t2c = load_captured_data(data_dir)
-    
+
     if len(R_g2b) < 3:
         print("Error: Need at least 3 poses for calibration.")
         return None
-    
+
     print(f"Running calibration using DANIILIDIS method...")
     
     # Compute calibration
     R_cam2gripper, t_cam2gripper = compute_hand_eye_calibration(
         R_g2b, t_g2b, R_t2c, t_t2c, method=method
     )
-    
+
     print("\nCalibration Result (T_cam_gripper):")
     print("Rotation Matrix (R_cam2gripper):")
     print(R_cam2gripper)
@@ -167,14 +167,14 @@ def run_calibration(
     print("\n--- Repeatability / Consistency Metrics ---")
     print(f"Position Error (Mean): {mean_err:.6f} m")
     print(f"Position Error (Std Dev): {std_err:.6f} m")
-    
+
     # Save result
     output_path = Path(output_dir) / "calibration_result.json"
     result = save_calibration_result(
         output_path, R_cam2gripper, t_cam2gripper, mean_err, std_err
     )
     print(f"\nSaved result to {output_path}")
-    
+
     if show_plot:
         plot_frames(R_g2b, t_g2b, R_t2c, t_t2c, T_cam2gripper)
     

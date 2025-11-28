@@ -176,7 +176,7 @@ class RobotController:
         direction: int,
         linear_speed: float = 0.02,
         angular_speed: float = 0.1,
-        force_threshold: float = 5.0
+        force_threshold: float = 10.0
     ):
         """
         Start jogging motion along an axis.

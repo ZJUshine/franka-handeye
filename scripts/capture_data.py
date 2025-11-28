@@ -199,7 +199,7 @@ def capture_poses(
             if capture_single_pose(robot, camera, detector, K, D, i, output_dir):
                 successful_captures += 1
             print()
-            
+                
         except Exception as e:
             print(f"✗ Error at pose {i}: {e}\n")
     

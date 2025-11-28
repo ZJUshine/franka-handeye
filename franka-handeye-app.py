@@ -559,11 +559,13 @@ def verify_calibration():
 # =============================================================================
 
 def create_jog_button(label: str, axis: int, sign: int, width: int = 60, height: int = 40):
-    """Create a jog button with proper state tracking."""
+    """Create a jog button - state will be checked in update loop."""
     btn_tag = f"jog_btn_{axis}_{sign}"
     dpg.add_button(label=label, tag=btn_tag, width=width, height=height)
-    ui_state['jog_buttons_pressed'] = ui_state.get('jog_buttons_pressed', {})
-    ui_state['jog_buttons_pressed'][btn_tag] = False
+    # Store metadata for the update loop
+    if 'jog_button_metadata' not in ui_state:
+        ui_state['jog_button_metadata'] = {}
+    ui_state['jog_button_metadata'][btn_tag] = (axis, sign)
 
 
 def create_ui():
@@ -936,75 +938,46 @@ def update_ui():
         log_text = "\n".join(ui_state['log_messages'][-8:])
         dpg.set_value("log_text", log_text)
     
-    # Handle jog button states
-    jog_buttons = ui_state.get('jog_buttons_pressed', {})
-    is_mouse_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
+    # Handle jog buttons - simple and robust
+    button_metadata = ui_state.get('jog_button_metadata', {})
+    mouse_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
     
-    # Find which button is currently hovered and clicked
-    active_btn = None
-    if is_mouse_down:
-        for btn_tag in jog_buttons.keys():
+    # Find if any jog button is currently pressed (hovered + mouse down)
+    active_button = None
+    if mouse_down:
+        for btn_tag, (axis, sign) in button_metadata.items():
             if dpg.does_item_exist(btn_tag) and dpg.is_item_hovered(btn_tag):
-                active_btn = btn_tag
+                active_button = (btn_tag, axis, sign)
                 break
     
-    # State machine for jogging
-    current_jog_btn = ui_state.get('current_jog_btn', None)
+    current_jog = ui_state.get('current_jog_button', None)
     
-    if active_btn:
+    if active_button:
+        btn_tag, axis, sign = active_button
         # A button is being held
-        if current_jog_btn is None:
-            # START: No button was held, now one is
-            parts = active_btn.split('_')
-            axis = int(parts[2])
-            sign = int(parts[3])
-            
-            # Start the jog
-            try:
-                if state.robot:
-                    # Ensure we are stopped first
-                    if state.robot.is_jogging:
-                        state.robot.stop_jog()
-                        time.sleep(0.05)
-                    
-                    state.robot.start_jog(axis, sign)
-                    ui_state['current_jog_btn'] = active_btn
-            except Exception as e:
-                log(f"Jog start error: {e}", "error")
-                if state.robot:
-                    state.robot.clear_jog_state()
-                    
-        elif current_jog_btn != active_btn:
-            # SWITCH: Different button held now
-            # Stop previous
+        if current_jog != btn_tag:
+            # New button or different button - start jogging
             if state.robot:
-                state.robot.stop_jog()
-                time.sleep(0.05)
-            
-            # Start new
-            parts = active_btn.split('_')
-            axis = int(parts[2])
-            sign = int(parts[3])
-            
-            try:
-                if state.robot:
+                # Stop existing jog if any
+                if state.robot.is_jogging:
+                    state.robot.stop_jog()
+                    time.sleep(0.02)
+                
+                # Start new jog
+                try:
                     state.robot.start_jog(axis, sign)
-                    ui_state['current_jog_btn'] = active_btn
-            except Exception as e:
-                log(f"Jog switch error: {e}", "error")
-                if state.robot:
+                    ui_state['current_jog_button'] = btn_tag
+                except Exception as e:
+                    log(f"Jog error: {e}", "error")
                     state.robot.clear_jog_state()
-                    ui_state['current_jog_btn'] = None
+                    ui_state['current_jog_button'] = None
     else:
         # No button is being held
-        if current_jog_btn is not None:
-            # STOP: Button released
+        if current_jog is not None:
+            # Button was released - stop jogging
             if state.robot:
                 state.robot.stop_jog()
-            ui_state['current_jog_btn'] = None
-        elif state.robot and state.robot.is_jogging:
-            # SAFETY: Make sure we are stopped if no UI state tracks it
-            state.robot.stop_jog()
+            ui_state['current_jog_button'] = None
 
 
 # =============================================================================
