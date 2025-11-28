@@ -235,9 +235,8 @@ class RobotController:
     
     def stop_jog(self):
         """Stop jogging motion."""
-        if not self._jogging:
-            return
-            
+        # Always try to stop, regardless of _jogging state
+        # (the async motion might have finished/errored but flag is still True)
         try:
             stop_motion = CartesianVelocityStopMotion(relative_dynamics_factor=0.9)
             self._robot.move(stop_motion)
@@ -246,6 +245,10 @@ class RobotController:
             pass
         finally:
             self._jogging = False
+    
+    def clear_jog_state(self):
+        """Clear jogging state without sending stop command."""
+        self._jogging = False
     
     @property
     def is_jogging(self) -> bool:

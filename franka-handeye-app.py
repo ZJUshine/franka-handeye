@@ -204,9 +204,13 @@ class AppState:
         # Initialization flags
         self._initialized = False
         self._camera_init_attempted = False
+        self.host = "172.16.0.2"  # Store host for reconnection
+        self.robot_error: str | None = None  # Store last robot error
     
     def initialize(self, host: str) -> bool:
         """Initialize hardware connections."""
+        self.host = host
+        
         if self._initialized:
             return True
         
@@ -215,9 +219,8 @@ class AppState:
             print("Initializing Camera...")
             self.camera = RealSenseCamera(lazy=True)
             
-            # Robot
-            print(f"Connecting to Robot at {host}...")
-            self.robot = RobotController(host, dynamics_factor=0.05)
+            # Robot - attempt connection but don't fail if it doesn't work
+            self.connect_robot()
             
             # Detector
             if self.board_params_path.exists():
@@ -247,6 +250,42 @@ class AppState:
             
         except Exception as e:
             print(f"Initialization Error: {e}")
+            return False
+    
+    def connect_robot(self) -> bool:
+        """
+        Attempt to connect/reconnect to the robot.
+        
+        Returns
+        -------
+        bool
+            True if connection succeeded.
+        """
+        self.robot_error = None
+        
+        try:
+            print(f"Connecting to Robot at {self.host}...")
+            self.robot = RobotController(self.host, dynamics_factor=0.05)
+            print("Robot connected successfully!")
+            return True
+        except Exception as e:
+            error_msg = str(e)
+            # Extract the meaningful part of the error
+            if "User stopped" in error_msg:
+                self.robot_error = "Robot in User Stopped mode - release E-stop and reset"
+            elif "command not possible" in error_msg:
+                self.robot_error = "Robot not ready - check control mode"
+            elif "Connection refused" in error_msg:
+                self.robot_error = "Connection refused - check franky server"
+            elif "timeout" in error_msg.lower():
+                self.robot_error = "Connection timeout - check network"
+            elif "franky is not installed" in error_msg:
+                self.robot_error = "Franky server cannot be reached. Please check the franky server state"
+            else:
+                self.robot_error = f"Connection failed: {error_msg[:50]}"
+            
+            print(f"Robot connection failed: {self.robot_error}")
+            self.robot = None
             return False
     
     def cleanup(self):
@@ -284,6 +323,16 @@ def log(message: str, level: str = "info"):
     if len(ui_state['log_messages']) > 100:
         ui_state['log_messages'] = ui_state['log_messages'][-100:]
     print(formatted)
+
+
+def reconnect_robot():
+    """Attempt to reconnect to the robot."""
+    log(f"Attempting to reconnect to robot at {state.host}...", "info")
+    
+    if state.connect_robot():
+        log("Robot reconnected successfully!", "success")
+    else:
+        log(f"Reconnection failed: {state.robot_error}", "error")
 
 
 # =============================================================================
@@ -344,18 +393,21 @@ def jog(axis: int, direction: int, btn_tag: str):
         log("Cannot jog: Robot not connected", "error")
         return
     
-    if state.robot.is_jogging:
-        stop_jog()
+    # Always stop any existing jog first
+    stop_jog()
     
     try:
         state.robot.start_jog(axis, direction)
     except Exception as e:
         log(f"Jog error: {e}", "error")
+        # Clear the jog state on error
+        if state.robot:
+            state.robot.clear_jog_state()
 
 
 def stop_jog():
     """Stop jogging motion."""
-    if state.robot and state.robot.is_jogging:
+    if state.robot:
         state.robot.stop_jog()
 
 
@@ -549,9 +601,20 @@ def create_ui():
             dpg.add_spacer(width=20)
             dpg.add_text("Robot:", color=Theme.TEXT_SECONDARY)
             dpg.add_text("Disconnected", tag="robot_status", color=Theme.DISCONNECTED)
+            dpg.add_spacer(width=8)
+            reconnect_btn = dpg.add_button(
+                label="Reconnect", 
+                tag="reconnect_btn",
+                callback=reconnect_robot, 
+                width=80, 
+                height=22
+            )
             dpg.add_spacer(width=20)
             dpg.add_text("Camera:", color=Theme.TEXT_SECONDARY)
             dpg.add_text("Disconnected", tag="camera_status", color=Theme.DISCONNECTED)
+        
+        # Robot error message (hidden by default)
+        dpg.add_text("", tag="robot_error_msg", color=Theme.ACCENT_WARNING, show=False)
         
         dpg.add_spacer(height=8)
         dpg.add_separator()
@@ -650,15 +713,15 @@ def create_ui():
                                 
                                 with dpg.group(horizontal=True):
                                     dpg.add_text("X:", color=Theme.TEXT_MUTED, indent=4)
-                                    create_jog_button("−", 0, -1)
+                                    create_jog_button("-", 0, -1)
                                     create_jog_button("+", 0, 1)
                                     dpg.add_spacer(width=20)
                                     dpg.add_text("Y:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("−", 1, -1)
+                                    create_jog_button("-", 1, -1)
                                     create_jog_button("+", 1, 1)
                                     dpg.add_spacer(width=20)
                                     dpg.add_text("Z:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("−", 2, -1)
+                                    create_jog_button("-", 2, -1)
                                     create_jog_button("+", 2, 1)
                         
                         dpg.add_spacer(height=12)
@@ -671,15 +734,15 @@ def create_ui():
                                 
                                 with dpg.group(horizontal=True):
                                     dpg.add_text("Rx:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("−", 3, -1)
+                                    create_jog_button("-", 3, -1)
                                     create_jog_button("+", 3, 1)
                                     dpg.add_spacer(width=16)
                                     dpg.add_text("Ry:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("−", 4, -1)
+                                    create_jog_button("-", 4, -1)
                                     create_jog_button("+", 4, 1)
                                     dpg.add_spacer(width=16)
                                     dpg.add_text("Rz:", color=Theme.TEXT_MUTED)
-                                    create_jog_button("−", 5, -1)
+                                    create_jog_button("-", 5, -1)
                                     create_jog_button("+", 5, 1)
                         
                         dpg.add_spacer(height=24)
@@ -804,7 +867,7 @@ def update_ui():
     dpg.set_value("capture_count", str(state.captured_count))
     dpg.set_value("capture_progress", state.captured_count / max(1, state.target_captures))
     
-    # Update robot state
+    # Update robot state and reconnect button visibility
     if state.robot:
         try:
             robot_state = state.robot.get_state()
@@ -817,12 +880,26 @@ def update_ui():
             
             dpg.set_value("robot_status", "Connected")
             dpg.configure_item("robot_status", color=Theme.CONNECTED)
-        except:
+            dpg.configure_item("reconnect_btn", show=False)
+            dpg.configure_item("robot_error_msg", show=False)
+        except Exception as e:
             dpg.set_value("robot_status", "Error")
-            dpg.configure_item("robot_status", color=Theme.DISCONNECTED)
+            dpg.configure_item("robot_status", color=Theme.ACCENT_WARNING)
+            dpg.configure_item("reconnect_btn", show=True)
+            dpg.set_value("robot_error_msg", f"  ⚠ Communication error - try reconnecting")
+            dpg.configure_item("robot_error_msg", show=True)
     else:
         dpg.set_value("robot_status", "Disconnected")
         dpg.configure_item("robot_status", color=Theme.DISCONNECTED)
+        dpg.configure_item("reconnect_btn", show=True)
+        dpg.set_value("position_display", "--- (robot disconnected)")
+        dpg.set_value("joints_display", "--- (robot disconnected)")
+        # Show error message if we have one
+        if state.robot_error:
+            dpg.set_value("robot_error_msg", f"  ⚠ {state.robot_error}")
+            dpg.configure_item("robot_error_msg", show=True)
+        else:
+            dpg.configure_item("robot_error_msg", show=False)
     
     # Update camera status
     if state.camera and state.camera.is_initialized:
@@ -861,28 +938,73 @@ def update_ui():
     
     # Handle jog button states
     jog_buttons = ui_state.get('jog_buttons_pressed', {})
-    any_pressed = False
+    is_mouse_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
     
-    for btn_tag in jog_buttons.keys():
-        if dpg.does_item_exist(btn_tag):
-            is_hovered = dpg.is_item_hovered(btn_tag)
-            is_mouse_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
-            button_held = is_hovered and is_mouse_down
+    # Find which button is currently hovered and clicked
+    active_btn = None
+    if is_mouse_down:
+        for btn_tag in jog_buttons.keys():
+            if dpg.does_item_exist(btn_tag) and dpg.is_item_hovered(btn_tag):
+                active_btn = btn_tag
+                break
+    
+    # State machine for jogging
+    current_jog_btn = ui_state.get('current_jog_btn', None)
+    
+    if active_btn:
+        # A button is being held
+        if current_jog_btn is None:
+            # START: No button was held, now one is
+            parts = active_btn.split('_')
+            axis = int(parts[2])
+            sign = int(parts[3])
             
-            if button_held:
-                any_pressed = True
-                if not jog_buttons[btn_tag]:
-                    parts = btn_tag.split('_')
-                    axis = int(parts[2])
-                    sign = int(parts[3])
-                    jog_buttons[btn_tag] = True
-                    jog(axis, sign, btn_tag)
-            else:
-                if jog_buttons[btn_tag]:
-                    jog_buttons[btn_tag] = False
-    
-    if state.robot and state.robot.is_jogging and not any_pressed:
-        stop_jog()
+            # Start the jog
+            try:
+                if state.robot:
+                    # Ensure we are stopped first
+                    if state.robot.is_jogging:
+                        state.robot.stop_jog()
+                        time.sleep(0.05)
+                    
+                    state.robot.start_jog(axis, sign)
+                    ui_state['current_jog_btn'] = active_btn
+            except Exception as e:
+                log(f"Jog start error: {e}", "error")
+                if state.robot:
+                    state.robot.clear_jog_state()
+                    
+        elif current_jog_btn != active_btn:
+            # SWITCH: Different button held now
+            # Stop previous
+            if state.robot:
+                state.robot.stop_jog()
+                time.sleep(0.05)
+            
+            # Start new
+            parts = active_btn.split('_')
+            axis = int(parts[2])
+            sign = int(parts[3])
+            
+            try:
+                if state.robot:
+                    state.robot.start_jog(axis, sign)
+                    ui_state['current_jog_btn'] = active_btn
+            except Exception as e:
+                log(f"Jog switch error: {e}", "error")
+                if state.robot:
+                    state.robot.clear_jog_state()
+                    ui_state['current_jog_btn'] = None
+    else:
+        # No button is being held
+        if current_jog_btn is not None:
+            # STOP: Button released
+            if state.robot:
+                state.robot.stop_jog()
+            ui_state['current_jog_btn'] = None
+        elif state.robot and state.robot.is_jogging:
+            # SAFETY: Make sure we are stopped if no UI state tracks it
+            state.robot.stop_jog()
 
 
 # =============================================================================
