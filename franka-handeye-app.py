@@ -1075,19 +1075,26 @@ def on_viewport_resize():
     
     # Update capture tab buttons and progress bar - make them responsive
     btn_area_width = right_width - 40  # Account for padding
+    spacer = 8  # Consistent gap between buttons
     
     if dpg.does_item_exist("capture_progress"):
-        dpg.configure_item("capture_progress", width=btn_area_width)
+        dpg.configure_item("capture_progress", width=btn_area_width + 16)
+    
+    # AUTO RUN (fills remaining) + STOP (fixed width)
+    stop_width = 90
     if dpg.does_item_exist("btn_auto_run"):
-        dpg.configure_item("btn_auto_run", width=int(btn_area_width * 0.70))
+        dpg.configure_item("btn_auto_run", width=btn_area_width - stop_width - spacer)
     if dpg.does_item_exist("btn_stop"):
-        dpg.configure_item("btn_stop", width=int(btn_area_width * 0.26))
+        dpg.configure_item("btn_stop", width=stop_width)
+    
+    # CAPTURE + CLEAR ALL (equal width, fill full row)
+    half_width = (btn_area_width - spacer) // 2
     if dpg.does_item_exist("btn_capture"):
-        dpg.configure_item("btn_capture", width=int((btn_area_width - 10) * 0.5))
+        dpg.configure_item("btn_capture", width=half_width)
     if dpg.does_item_exist("btn_clear"):
-        dpg.configure_item("btn_clear", width=int((btn_area_width - 10) * 0.5))
+        dpg.configure_item("btn_clear", width=half_width)
         
-    # Resize other full-width elements
+    # Full-width elements
     if dpg.does_item_exist("btn_go_home"):
         dpg.configure_item("btn_go_home", width=btn_area_width)
     if dpg.does_item_exist("btn_run_calib"):
@@ -1096,10 +1103,12 @@ def on_viewport_resize():
         dpg.configure_item("calib_result_window", width=btn_area_width)
     if dpg.does_item_exist("verify_status_window"):
         dpg.configure_item("verify_status_window", width=btn_area_width)
+    
+    # CHECK FRAMES + VISIT CORNERS (equal width)
     if dpg.does_item_exist("btn_check_frames"):
-        dpg.configure_item("btn_check_frames", width=int((btn_area_width - 10) * 0.5))
+        dpg.configure_item("btn_check_frames", width=half_width)
     if dpg.does_item_exist("btn_visit_corners"):
-        dpg.configure_item("btn_visit_corners", width=int((btn_area_width - 10) * 0.5))
+        dpg.configure_item("btn_visit_corners", width=half_width)
         
         
     # Update text wrapping for description texts
@@ -1198,7 +1207,7 @@ def create_ui():
                         dpg.add_text("ROBOT STATE", color=Theme.TEXT_SECONDARY)
                         dpg.add_spacer(height=4)
                         with dpg.child_window(tag="robot_state_window", width=440, height=170, border=True, no_scrollbar=True):
-                            dpg.add_text("Position (xyz):", color=Theme.TEXT_MUTED)
+                            dpg.add_text("Pose (x, y, z, rx, ry, rz):", color=Theme.TEXT_MUTED)
                             dpg.add_text("---", tag="position_display")
                             dpg.add_spacer(height=6)
                             dpg.add_text("Joint angles:", color=Theme.TEXT_MUTED)
@@ -1235,29 +1244,29 @@ def create_ui():
                             dpg.add_text("/", color=Theme.TEXT_MUTED)
                             dpg.add_text(str(state.target_captures), tag="target_count")
                         
-                        dpg.add_progress_bar(default_value=0.0, tag="capture_progress", width=-1)
+                        dpg.add_progress_bar(default_value=0.0, tag="capture_progress", width=376)
                         
                         dpg.add_spacer(height=12)
                         
                         # Capture buttons
                         with dpg.group(horizontal=True, tag="capture_btn_row1"):
-                            btn = dpg.add_button(label="AUTO RUN", tag="btn_auto_run", callback=start_auto_capture, width=250, height=44)
+                            btn = dpg.add_button(label="AUTO RUN", tag="btn_auto_run", callback=start_auto_capture, width=262, height=44)
                             dpg.bind_item_theme(btn, ui_state['themes']['success'])
                             
-                            dpg.add_spacer(width=10)
+                            dpg.add_spacer(width=8)
                             
-                            btn = dpg.add_button(label="STOP", tag="btn_stop", callback=stop_auto_capture, width=100, height=44)
+                            btn = dpg.add_button(label="STOP", tag="btn_stop", callback=stop_auto_capture, width=90, height=44)
                             dpg.bind_item_theme(btn, ui_state['themes']['danger'])
                             
                         dpg.add_spacer(height=10)
 
                         with dpg.group(horizontal=True, tag="capture_btn_row2"):
-                            btn = dpg.add_button(label="CAPTURE", tag="btn_capture", callback=capture_pose, width=175, height=44)
+                            btn = dpg.add_button(label="CAPTURE", tag="btn_capture", callback=capture_pose, width=176, height=44)
                             dpg.bind_item_theme(btn, ui_state['themes']['accent'])
                             
-                            dpg.add_spacer(width=10)
+                            dpg.add_spacer(width=8)
                             
-                            btn = dpg.add_button(label="CLEAR ALL", tag="btn_clear", callback=clear_captures, width=175, height=44)
+                            btn = dpg.add_button(label="CLEAR ALL", tag="btn_clear", callback=clear_captures, width=176, height=44)
                             dpg.bind_item_theme(btn, ui_state['themes']['danger'])
                         
                         dpg.add_spacer(height=16)
@@ -1354,10 +1363,10 @@ def create_ui():
                             dpg.add_text("Status:", color=Theme.TEXT_MUTED)
                             dpg.add_text("No calibration loaded", tag="calib_status")
                             dpg.add_spacer(height=10)
-                            dpg.add_text("Translation (xyz):", color=Theme.TEXT_MUTED)
+                            dpg.add_text("Pose (x, y, z, rx, ry, rz):", color=Theme.TEXT_MUTED)
                             dpg.add_text("---", tag="calib_translation")
                             dpg.add_spacer(height=10)
-                            dpg.add_text("Quaternion (xyzw):", color=Theme.TEXT_MUTED)
+                            dpg.add_text("Quaternion (x, y, z, w):", color=Theme.TEXT_MUTED)
                             dpg.add_text("---", tag="calib_quaternion")
                             dpg.add_spacer(height=10)
                             dpg.add_text("Consistency Error:", color=Theme.TEXT_MUTED)
@@ -1380,12 +1389,12 @@ def create_ui():
                         dpg.add_spacer(height=12)
                         
                         with dpg.group(horizontal=True, tag="verify_btn_row"):
-                            btn_check = dpg.add_button(label="CHECK FRAMES", tag="btn_check_frames", callback=check_frames_visualizer, width=175, height=44)
+                            btn_check = dpg.add_button(label="CHECK FRAMES", tag="btn_check_frames", callback=check_frames_visualizer, width=176, height=44)
                             dpg.bind_item_theme(btn_check, ui_state['themes']['accent'])
                             
-                            dpg.add_spacer(width=10)
+                            dpg.add_spacer(width=8)
                             
-                            btn_visit = dpg.add_button(label="VISIT CORNERS", tag="btn_visit_corners", callback=start_visit_corners, width=175, height=44)
+                            btn_visit = dpg.add_button(label="VISIT CORNERS", tag="btn_visit_corners", callback=start_visit_corners, width=176, height=44)
                             dpg.bind_item_theme(btn_visit, ui_state['themes']['accent'])
                         
                         dpg.add_spacer(height=16)
@@ -1403,7 +1412,7 @@ def create_ui():
                             dpg.add_text("ChArUco:", color=Theme.TEXT_MUTED)
                             dpg.add_text("Not detected", tag="verify_detection_status", color=Theme.ACCENT_WARNING)
                             dpg.add_spacer(height=8)
-                            dpg.add_text("Board Position:", color=Theme.TEXT_MUTED)
+                            dpg.add_text("Board Pose (x, y, z, rx, ry, rz):", color=Theme.TEXT_MUTED)
                             dpg.add_text("---", tag="verify_board_pos")
     
     # Bind resize handler to primary window
@@ -1431,8 +1440,9 @@ def update_ui():
         dpg.configure_item("detection_status", color=Theme.DETECTING)
         dpg.set_value("verify_detection_status", "Detected")
         dpg.configure_item("verify_detection_status", color=Theme.ACCENT_SUCCESS)
-        if tvec is not None:
-            pos_str = f"[{tvec[0][0]:.3f}, {tvec[1][0]:.3f}, {tvec[2][0]:.3f}]"
+        if tvec is not None and rvec is not None:
+            euler_board = R.from_rotvec(rvec.flatten()).as_euler('xyz', degrees=True)
+            pos_str = f"[{tvec[0][0]:.3f}, {tvec[1][0]:.3f}, {tvec[2][0]:.3f}, {euler_board[0]:.1f}°, {euler_board[1]:.1f}°, {euler_board[2]:.1f}°]"
             dpg.set_value("verify_board_pos", pos_str)
     else:
         dpg.set_value("detection_status", "NOT DETECTED")
@@ -1451,8 +1461,10 @@ def update_ui():
             robot_state = state.robot.get_state()
             pos = robot_state['position']
             q = robot_state['q']
+            O_T_EE = robot_state['O_T_EE']
+            euler = R.from_matrix(O_T_EE[:3, :3]).as_euler('xyz', degrees=True)
             
-            dpg.set_value("position_display", f"[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
+            dpg.set_value("position_display", f"[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}, {euler[0]:.2f}°, {euler[1]:.2f}°, {euler[2]:.2f}°]")
             q_str = ", ".join([f"{x:.2f}" for x in q])
             dpg.set_value("joints_display", f"[{q_str}]")
             
@@ -1494,10 +1506,11 @@ def update_ui():
         
         xyz = state.calibration_result.get('xyz', [0, 0, 0])
         quat = state.calibration_result.get('quaternion_xyzw', [0, 0, 0, 1])
+        euler_calib = R.from_quat(quat).as_euler('xyz', degrees=True)
         mean_err = state.calibration_result.get('consistency_error_mean', 0)
         std_err = state.calibration_result.get('consistency_error_std', 0)
         
-        dpg.set_value("calib_translation", f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}]")
+        dpg.set_value("calib_translation", f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}, {euler_calib[0]:.2f}°, {euler_calib[1]:.2f}°, {euler_calib[2]:.2f}°]")
         dpg.set_value("calib_quaternion", f"[{quat[0]:.4f}, {quat[1]:.4f}, {quat[2]:.4f}, {quat[3]:.4f}]")
         dpg.set_value("calib_error", f"{mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm")
         
