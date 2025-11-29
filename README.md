@@ -1,192 +1,66 @@
 # Franka Hand-Eye Calibration
 
-A pure Python tool for hand-eye calibration of the Franka robot using a RealSense camera and Charuco board.
+A complete GUI application for hand-eye calibration of the Franka robot using a RealSense camera and Charuco board.
 
 ![Calibration Verification](data/media/franka-handeye-verification.gif)
 
 ## Installation
 
-### 1. Server Setup (Set & Forget)
+### 1. Server Side (Robot PC)
+The robot control runs on a real-time machine. We recommend using [ServoBox](https://www.servobox.dev/) to deploy the [franky-remote](https://github.com/kvasios/franky-remote) server.
 
-The robot control requires a real-time environment. We recommend using **`servobox`** on your local workstation, but you can also run `franky-remote` manually or use a local `franky` installation if you have a Real-Time kernel setup.
-
-Open a dedicated terminal (Terminal 1) and run the server. **This process must remain running in the background.**
-
+Install and run the package for your robot generation:
 ```bash
-# Option A: Using Servobox (Recommended)
-servobox pkg-install franky-remote-gen1  # (or franky-remote-fr3)
+# For Franka Emika Panda (Gen1)
+servobox pkg-install franky-remote-gen1
 servobox run franky-remote-gen1
 
-# Option B: Manual / Custom Setup
-# Ensure your franky/franky-remote server is running and accessible.
+# OR for Franka Research 3 (FR3)
+servobox pkg-install franky-remote-fr3
+servobox run franky-remote-fr3
 ```
 
-### 2. Client Setup
-
-In a new terminal (Terminal 2), clone the repository and install the environment. We recommend `micromamba`, but `conda` works too.
-
+### 2. Client Side (Workstation)
+Clone and install dependencies:
 ```bash
-# Clone this repository
 git clone https://github.com/kvasios/franka-handeye.git
 cd franka-handeye
 
-# Create and activate environment (micromamba or conda)
+# Create environment (optional but recommended)
 micromamba create -n franka-handeye python=3.10
 micromamba activate franka-handeye
 
-# Install dependencies
+# Install
 pip install -r requirements.txt
 pip install -e .
 ```
 
+## Quick Start
+
+Run the GUI application:
+```bash
+python franka-handeye-app.py --host <ROBOT_IP>
+```
+*Default host is `172.16.0.2`*
+
+### Workflow
+1.  **Capture**:
+    *   **Auto Run**: Uses 12 recommended preset poses to automatically capture the dataset.
+    *   **Manual**: Alternatively, use **Jog Controls** to move to your own poses and click **Capture**.
+    *   Ensure ChArUco board is detected (green status) for each pose.
+2.  **Calibrate**:
+    *   Click **Run Calibration**.
+    *   Check the result and 3D plot.
+3.  **Verify**:
+    *   **Check Frames**: Visualizes the computed frame alignment.
+    *   **Visit Corners**: Robot physically traces the board corners to verify accuracy.
+
 ## Configuration
+*   **Board**: Update `config/calibration_board_parameters.yaml` with your physical board measurements.
+*   **Poses**: `config/joint_poses.yaml` contains the 12 poses used for Auto Capture.
 
-### Charuco Board
-
-1. Print the Charuco board provided in `config/charuco_board_5x7.png`
-2. Measure the actual physical dimensions of the squares and markers
-3. Update `config/calibration_board_parameters.yaml` with the measured values:
-   - `board_size`: Number of squares [width, height]
-   - `square_length`: Size of each square in meters
-   - `marker_length`: Size of each ArUco marker in meters
-
-### Joint Poses
-
-The file `config/joint_poses.yaml` must contain exactly **12 joint configurations** (7 values each) that the robot will visit during calibration. These poses should provide good coverage of the workspace and diverse viewing angles of the calibration board.
-
-**Requirements:**
-- Exactly 12 poses
-- Each pose must have 7 joint angles (in radians)
-- Poses should be collision-free and reachable
-- The calibration board must be visible from all poses
-
-## Usage
-
-### Quick Start - Complete Workflow
-
-The easiest way to run the entire calibration pipeline is using the main orchestration script:
-
-```bash
-# Set the Franka Server IP (Real-Time Machine IP)
-export FRANKY_SERVER_IP=192.168.1.X 
-
-# Run the complete workflow
-python run_calibration.py --host <ROBOT_FCI_IP>
-```
-
-This will automatically:
-1. Capture data from all 12 poses
-2. Compute the hand-eye calibration (with 3D visualization)
-3. Verify the calibration by tracing the complete perimeter of the board
-
-**Optional arguments:**
-- `--host`: Robot FCI IP address (default: `172.16.0.2`)
-- `--verify-offset`: Distance from board during verification in meters (default: `0.06`)
-
-**Example with custom offset:**
-```bash
-python run_calibration.py --host 172.16.0.2 --verify-offset 0.03
-```
-
-**Note:** If you need more control (e.g., running only specific steps), use the individual scripts described in the Manual Steps section below.
-
----
-
-### Manual Steps (Advanced)
-
-If you prefer to run each step individually for more control:
-
-#### Step 1: Data Capture
-
-The capture script automatically moves the robot through all 12 joint poses defined in `config/joint_poses.yaml`, captures images with the RealSense camera, detects the Charuco board, and records the robot state.
-
-```bash
-# Set the Franka Server IP (Real-Time Machine IP)
-export FRANKY_SERVER_IP=192.168.1.X 
-
-# Run the capture script
-python scripts/capture_data.py --host <ROBOT_FCI_IP>
-```
-
-**Arguments:**
-- `--host`: Robot FCI IP address (default: `172.16.0.2`)
-- `--output`: Output directory (default: `data/captured-data`)
-
-The script will:
-1. Validate that exactly 12 poses are configured
-2. Connect to the robot and camera
-3. Move through each pose sequentially
-4. Capture an image and detect the Charuco board at each pose
-5. Save all data to the output directory
-
-**Output:** The script creates a `pose_XX` folder for each capture containing:
-- `image.png`: Captured camera image
-- `data.json`: Robot state, camera intrinsics, and Charuco detection results
-
-#### Step 2: Compute Calibration
-
-After successfully capturing data from all 12 poses, run the calibration script to compute the hand-eye transformation (camera-to-gripper transform).
-
-```bash
-python scripts/compute_calibration.py
-```
-
-**Optional arguments:**
-- `--data`: Input directory with captured data (default: `data/captured-data`)
-- `--plot`: Show 3D visualization of the calibrated frames
-
-The script will:
-1. Load all captured poses
-2. Run hand-eye calibration using OpenCV's Daniilidis method
-3. Compute consistency metrics across all poses
-4. Save the calibration result to `data/hand-eye-calibration-output/calibration_result.json`
-
-**Output:** The calibration result contains:
-- `T_cam_gripper`: 4x4 homogeneous transformation matrix
-- `xyz`: Translation vector [x, y, z]
-- `quaternion_xyzw`: Orientation as quaternion [x, y, z, w]
-- `consistency_error_mean`: Mean reprojection error
-- `consistency_error_std`: Standard deviation of reprojection error
-
-**⚠️ Important:** Before using the calibration, visually inspect the results with:
-
-```bash
-python scripts/compute_calibration.py --plot
-```
-
-#### Step 3: Verify Calibration (Optional but Recommended)
-
-To validate the calibration, you can run a verification script that uses the computed transformation to align the robot with the charuco board and trace its complete perimeter.
-
-```bash
-python scripts/verify_calibration.py --host <ROBOT_FCI_IP>
-```
-
-**Optional arguments:**
-- `--host`: Robot FCI IP address (default: `172.16.0.2`)
-- `--offset`: Distance from board in meters (default: `0.06`)
-- `--calibration`: Path to calibration result (default: `data/hand-eye-calibration-output/calibration_result.json`)
-
-This script will:
-1. Detect the charuco board from home position
-2. Show a 3D preview of the planned alignment
-3. Visit the board center
-4. Trace all 4 edges by visiting: Top-Left → Top-Right → Bottom-Right → Bottom-Left → Top-Left
-5. Return to home position
-
-**Safety:** The script includes confirmation prompts and moves the robot at controlled speeds. Always ensure the workspace is clear and have the emergency stop ready.
-
-## Workflow Summary
-
-### Complete Workflow (Recommended)
-```bash
-python run_calibration.py --host <ROBOT_IP>
-```
-
-### Individual Steps (For Advanced Control)
-1. **Setup**: Ensure server is running and configuration files are correct
-2. **Capture**: `python scripts/capture_data.py --host <ROBOT_IP>`
-3. **Calibrate**: `python scripts/compute_calibration.py --plot`
-4. **Verify**: `python scripts/verify_calibration.py --host <ROBOT_IP>`
-5. **Result**: Use the transformation from `data/hand-eye-calibration-output/calibration_result.json`
-
+## Headless / Scripts
+Individual scripts are available in `scripts/` for CI or headless operation:
+*   `scripts/capture_data.py`: Capture dataset.
+*   `scripts/compute_calibration.py`: Compute from existing data.
+*   `scripts/verify_calibration.py`: Run physical verification.
