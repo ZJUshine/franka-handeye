@@ -2,7 +2,10 @@
 
 A complete GUI application for hand-eye calibration of the Franka robot using a RealSense camera and Charuco board.
 
-![Calibration Verification](data/media/franka-handeye-verification.gif)
+<p align="center">
+  <img src="data/media/franka-handeye-app-gui-screenshot.png" width="49%" />
+  <img src="data/media/franka-handeye-verification.gif" width="49%" />
+</p>
 
 ## Installation
 
