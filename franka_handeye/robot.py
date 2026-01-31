@@ -7,7 +7,7 @@ import numpy as np
 from typing import Callable
 
 # Set default server IP before importing franky
-os.environ.setdefault("FRANKY_SERVER_IP", "192.168.122.100")
+os.environ.setdefault("FRANKY_SERVER_IP", "172.16.0.48")
 
 try:
     from franky import (

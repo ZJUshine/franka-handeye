@@ -82,3 +82,4 @@ Individual scripts are available in `scripts/` for CI or headless operation:
 *   `scripts/capture_data.py`: Capture dataset.
 *   `scripts/compute_calibration.py`: Compute from existing data.
 *   `scripts/verify_calibration.py`: Run physical verification.
+*   `scripts/verify_click_point.py`: Click a pixel to move the gripper to that 3D point (uses depth).
