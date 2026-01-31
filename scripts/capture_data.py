@@ -24,6 +24,7 @@ from franka_handeye import (
     RealSenseCamera,
     CharucoDetector,
     RobotController,
+    CalibrationMode,
     NumpyEncoder,
 )
 import numpy as np
@@ -81,11 +82,12 @@ def capture_single_pose(
     K: np.ndarray,
     D: np.ndarray,
     pose_idx: int,
-    output_dir: Path
+    output_dir: Path,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> bool:
     """
     Capture data for a single pose.
-    
+
     Parameters
     ----------
     robot : RobotController
@@ -102,7 +104,9 @@ def capture_single_pose(
         Pose index for naming.
     output_dir : Path
         Output directory.
-    
+    mode : CalibrationMode
+        Calibration mode to save in data.json.
+
     Returns
     -------
     bool
@@ -134,6 +138,7 @@ def capture_single_pose(
     cv2.imwrite(str(pose_dir / "image.png"), frame)
     
     data = {
+        "calibration_mode": mode.value,
         "joint_pose": q,
         "O_T_EE": O_T_EE,
         "camera_intrinsics": K.tolist() if hasattr(K, 'tolist') else K,
@@ -160,11 +165,12 @@ def capture_poses(
     output_dir: Path,
     K: np.ndarray,
     D: np.ndarray,
-    stabilization_delay: float = 0.5
+    stabilization_delay: float = 0.5,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> int:
     """
     Capture data at each joint pose automatically.
-    
+
     Parameters
     ----------
     robot : RobotController
@@ -183,13 +189,15 @@ def capture_poses(
         Distortion coefficients.
     stabilization_delay : float
         Delay after reaching pose before capture (seconds).
-    
+    mode : CalibrationMode
+        Calibration mode to save in data.json.
+
     Returns
     -------
     int
         Number of successful captures.
     """
-    print(f"\nStarting automatic capture of {len(joint_poses)} poses...\n")
+    print(f"\nStarting automatic capture of {len(joint_poses)} poses (mode: {mode.value})...\n")
     
     # Clean output directory
     if output_dir.exists():
@@ -205,7 +213,7 @@ def capture_poses(
             robot.move_joints(pose)
             time.sleep(stabilization_delay)
             
-            if capture_single_pose(robot, camera, detector, K, D, i, output_dir):
+            if capture_single_pose(robot, camera, detector, K, D, i, output_dir, mode):
                 successful_captures += 1
             print()
                 
@@ -222,12 +230,16 @@ def main():
     )
     parser.add_argument("--host", default="172.16.0.2", help="Robot FCI IP address")
     parser.add_argument("--output", default="data/captured-data", help="Output directory")
-    parser.add_argument("--poses", default="config/joint_poses.yaml", help="Joint poses config")
-    parser.add_argument("--board", default="config/calibration_board_parameters.yaml", 
+    parser.add_argument("--poses", default="config/default_joint_poses.yaml", help="Joint poses config")
+    parser.add_argument("--board", default="config/calibration_board_parameters.yaml",
                         help="Charuco board parameters")
+    parser.add_argument("--mode", default="eye_in_hand",
+                        choices=["eye_in_hand", "eye_to_hand"],
+                        help="Calibration mode (default: eye_in_hand)")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
+    mode = CalibrationMode(args.mode)
 
     print("=" * 60)
     print("Franka Hand-Eye Calibration - Data Capture")
@@ -286,7 +298,7 @@ def main():
 
     # Capture data
     try:
-        successful = capture_poses(robot, camera, detector, joint_poses, output_dir, K, D)
+        successful = capture_poses(robot, camera, detector, joint_poses, output_dir, K, D, mode=mode)
         
         if successful == len(joint_poses):
             print("\n" + "=" * 60)

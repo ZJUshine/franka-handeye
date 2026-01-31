@@ -16,6 +16,7 @@ from .camera import RealSenseCamera
 from .detector import CharucoDetector
 from .robot import RobotController
 from .calibration import (
+    CalibrationMode,
     NumpyEncoder,
     load_captured_data,
     compute_hand_eye_calibration,
@@ -34,6 +35,7 @@ __all__ = [
     # Robot
     "RobotController",
     # Calibration
+    "CalibrationMode",
     "NumpyEncoder",
     "load_captured_data",
     "compute_hand_eye_calibration",

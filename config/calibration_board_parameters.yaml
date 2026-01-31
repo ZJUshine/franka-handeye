@@ -1,3 +1,5 @@
 board_size: [5, 7]
-square_length: 0.034  # meters
-marker_length: 0.028  # meters 
+# square_length: 0.034  # meters
+# marker_length: 0.028  # meters 
+square_length: 0.0365  # meters
+marker_length: 0.0295  # meters 

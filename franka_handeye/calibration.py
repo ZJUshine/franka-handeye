@@ -1,12 +1,23 @@
 """
 Hand-eye calibration computation and verification.
+
+Supports two calibration modes:
+- EYE_IN_HAND: Camera mounted on robot gripper, target fixed in world
+- EYE_TO_HAND: Camera fixed in world, target mounted on robot gripper
 """
 
 import json
 import numpy as np
 import cv2
+from enum import Enum
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
+
+
+class CalibrationMode(str, Enum):
+    """Calibration mode for hand-eye calibration."""
+    EYE_IN_HAND = "eye_in_hand"
+    EYE_TO_HAND = "eye_to_hand"
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -97,11 +108,12 @@ def compute_hand_eye_calibration(
     t_gripper2base: list,
     R_target2cam: list,
     t_target2cam: list,
-    method: int = cv2.CALIB_HAND_EYE_DANIILIDIS
+    method: int = cv2.CALIB_HAND_EYE_DANIILIDIS,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute hand-eye calibration using OpenCV.
-    
+
     Parameters
     ----------
     R_gripper2base : list
@@ -114,24 +126,46 @@ def compute_hand_eye_calibration(
         List of translation vectors (target to camera).
     method : int
         OpenCV calibration method. Default is DANIILIDIS.
-    
+    mode : CalibrationMode
+        EYE_IN_HAND: camera on gripper, solves T_cam2gripper.
+        EYE_TO_HAND: camera fixed, solves T_cam2base.
+
     Returns
     -------
     tuple
-        (R_cam2gripper, t_cam2gripper) rotation matrix and translation vector.
+        EYE_IN_HAND: (R_cam2gripper, t_cam2gripper)
+        EYE_TO_HAND: (R_cam2base, t_cam2base)
     """
     if len(R_gripper2base) < 3:
         raise ValueError("Need at least 3 poses for calibration.")
-    
-    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
-        R_gripper2base=R_gripper2base,
-        t_gripper2base=t_gripper2base,
-        R_target2cam=R_target2cam,
-        t_target2cam=t_target2cam,
-        method=method
-    )
-    
-    return R_cam2gripper, t_cam2gripper
+
+    mode = CalibrationMode(mode)
+
+    if mode == CalibrationMode.EYE_TO_HAND:
+        # For eye-to-hand, OpenCV expects R_base2gripper and t_base2gripper
+        # (the inverse of T_gripper2base)
+        R_base2gripper = [Rg.T for Rg in R_gripper2base]
+        t_base2gripper = [
+            -Rg.T @ tg.flatten() for Rg, tg in zip(R_gripper2base, t_gripper2base)
+        ]
+
+        R_result, t_result = cv2.calibrateHandEye(
+            R_gripper2base=R_base2gripper,
+            t_gripper2base=t_base2gripper,
+            R_target2cam=R_target2cam,
+            t_target2cam=t_target2cam,
+            method=method
+        )
+    else:
+        R_result, t_result = cv2.calibrateHandEye(
+            R_gripper2base=R_gripper2base,
+            t_gripper2base=t_gripper2base,
+            R_target2cam=R_target2cam,
+            t_target2cam=t_target2cam,
+            method=method
+        )
+
+    return R_result, t_result
 
 
 def compute_consistency_metrics(
@@ -139,14 +173,16 @@ def compute_consistency_metrics(
     t_gripper2base: list,
     R_target2cam: list,
     t_target2cam: list,
-    T_cam2gripper: np.ndarray
+    T_calibration: np.ndarray,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> tuple[float, float]:
     """
     Compute consistency/repeatability metrics for calibration.
-    
-    The target (charuco board) position in base frame should be constant
-    across all poses if calibration is accurate.
-    
+
+    For EYE_IN_HAND: the target (charuco board) position in base frame should
+    be constant across all poses if calibration is accurate.
+    For EYE_TO_HAND: the target position in gripper frame should be constant.
+
     Parameters
     ----------
     R_gripper2base : list
@@ -157,59 +193,76 @@ def compute_consistency_metrics(
         List of target-to-camera rotation matrices.
     t_target2cam : list
         List of target-to-camera translations.
-    T_cam2gripper : np.ndarray
-        4x4 camera-to-gripper transformation matrix.
-    
+    T_calibration : np.ndarray
+        4x4 transformation matrix.
+        EYE_IN_HAND: T_cam2gripper
+        EYE_TO_HAND: T_cam2base
+    mode : CalibrationMode
+        Calibration mode.
+
     Returns
     -------
     tuple
         (mean_error, std_error) position errors in meters.
     """
+    mode = CalibrationMode(mode)
     target_positions = []
-    
+
     for i in range(len(R_gripper2base)):
         T_g2b = np.eye(4)
         T_g2b[:3, :3] = R_gripper2base[i]
         T_g2b[:3, 3] = t_gripper2base[i].flatten()
-        
+
         T_t2c = np.eye(4)
         T_t2c[:3, :3] = R_target2cam[i]
         T_t2c[:3, 3] = t_target2cam[i].flatten()
-        
-        # T_target2base = T_gripper2base * T_cam2gripper * T_target2cam
-        T_t2b = T_g2b @ T_cam2gripper @ T_t2c
-        target_positions.append(T_t2b[:3, 3])
-    
+
+        if mode == CalibrationMode.EYE_TO_HAND:
+            # T_cam2base is fixed, check T_target2gripper consistency
+            # T_target2base = T_cam2base @ T_target2cam
+            T_target2base = T_calibration @ T_t2c
+            # T_target2gripper = T_base2gripper @ T_target2base
+            T_base2gripper = np.linalg.inv(T_g2b)
+            T_target2gripper = T_base2gripper @ T_target2base
+            target_positions.append(T_target2gripper[:3, 3])
+        else:
+            # T_target2base = T_gripper2base * T_cam2gripper * T_target2cam
+            T_t2b = T_g2b @ T_calibration @ T_t2c
+            target_positions.append(T_t2b[:3, 3])
+
     target_positions = np.array(target_positions)
     mean_pos = np.mean(target_positions, axis=0)
     pos_errors = np.linalg.norm(target_positions - mean_pos, axis=1)
-    
+
     return float(np.mean(pos_errors)), float(np.std(pos_errors))
 
 
 def save_calibration_result(
     output_path: str | Path,
-    R_cam2gripper: np.ndarray,
-    t_cam2gripper: np.ndarray,
+    R_result: np.ndarray,
+    t_result: np.ndarray,
     consistency_error_mean: float = None,
-    consistency_error_std: float = None
+    consistency_error_std: float = None,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> dict:
     """
     Save calibration result to JSON file.
-    
+
     Parameters
     ----------
     output_path : str or Path
         Output file path.
-    R_cam2gripper : np.ndarray
+    R_result : np.ndarray
         3x3 rotation matrix.
-    t_cam2gripper : np.ndarray
+    t_result : np.ndarray
         Translation vector.
     consistency_error_mean : float, optional
         Mean consistency error.
     consistency_error_std : float, optional
         Std of consistency error.
-    
+    mode : CalibrationMode
+        Calibration mode.
+
     Returns
     -------
     dict
@@ -217,69 +270,90 @@ def save_calibration_result(
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
+    mode = CalibrationMode(mode)
+
     # Create homogeneous matrix
-    T_cam2gripper = np.eye(4)
-    T_cam2gripper[:3, :3] = R_cam2gripper
-    T_cam2gripper[:3, 3] = t_cam2gripper.flatten()
-    
+    T_result = np.eye(4)
+    T_result[:3, :3] = R_result
+    T_result[:3, 3] = t_result.flatten()
+
     # Convert to quaternion
-    quat = R.from_matrix(R_cam2gripper).as_quat()  # [x, y, z, w]
-    
+    quat = R.from_matrix(R_result).as_quat()  # [x, y, z, w]
+
+    # Use mode-specific key for the transformation matrix
+    if mode == CalibrationMode.EYE_TO_HAND:
+        matrix_key = "T_cam_base"
+    else:
+        matrix_key = "T_cam_gripper"
+
     result = {
-        "T_cam_gripper": T_cam2gripper.tolist(),
-        "xyz": t_cam2gripper.flatten().tolist(),
+        "mode": mode.value,
+        matrix_key: T_result.tolist(),
+        "xyz": t_result.flatten().tolist(),
         "quaternion_xyzw": quat.tolist(),
     }
-    
+
     if consistency_error_mean is not None:
         result["consistency_error_mean"] = consistency_error_mean
     if consistency_error_std is not None:
         result["consistency_error_std"] = consistency_error_std
-    
+
     with open(output_path, 'w') as f:
         json.dump(result, f, indent=4)
-    
+
     return result
 
 
-def load_calibration_result(calib_path: str | Path) -> np.ndarray:
+def load_calibration_result(calib_path: str | Path) -> tuple[np.ndarray, CalibrationMode]:
     """
     Load calibration result from JSON file.
-    
+
     Parameters
     ----------
     calib_path : str or Path
         Path to calibration JSON file.
-    
+
     Returns
     -------
-    np.ndarray
-        4x4 camera-to-gripper transformation matrix.
+    tuple
+        (T_result, mode) where T_result is a 4x4 transformation matrix and
+        mode is the CalibrationMode. For legacy files without a mode field,
+        defaults to EYE_IN_HAND.
     """
     with open(calib_path, 'r') as f:
         calib = json.load(f)
-    
-    return np.array(calib['T_cam_gripper'])
+
+    mode_str = calib.get('mode', CalibrationMode.EYE_IN_HAND.value)
+    mode = CalibrationMode(mode_str)
+
+    if mode == CalibrationMode.EYE_TO_HAND:
+        T = np.array(calib['T_cam_base'])
+    else:
+        T = np.array(calib['T_cam_gripper'])
+
+    return T, mode
 
 
 def compute_alignment_pose(
     T_gripper_base_current: np.ndarray,
-    T_cam_gripper: np.ndarray,
+    T_calibration: np.ndarray,
     rvec: np.ndarray,
     tvec: np.ndarray,
     offset_distance: float = 0.1,
-    target_point_in_board: list = None
+    target_point_in_board: list = None,
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ) -> np.ndarray:
     """
     Compute desired gripper pose to align with charuco board.
-    
+
     Parameters
     ----------
     T_gripper_base_current : np.ndarray
         Current gripper pose in base frame (4x4).
-    T_cam_gripper : np.ndarray
-        Camera to gripper transform from calibration (4x4).
+    T_calibration : np.ndarray
+        EYE_IN_HAND: Camera to gripper transform (4x4).
+        EYE_TO_HAND: Camera to base transform (4x4).
     rvec : np.ndarray
         Rotation vector of target in camera frame.
     tvec : np.ndarray
@@ -288,7 +362,9 @@ def compute_alignment_pose(
         Distance to maintain from board (meters).
     target_point_in_board : list
         [x, y, z] point in board frame to align with. Default: origin.
-    
+    mode : CalibrationMode
+        Calibration mode.
+
     Returns
     -------
     np.ndarray
@@ -296,21 +372,27 @@ def compute_alignment_pose(
     """
     if target_point_in_board is None:
         target_point_in_board = [0, 0, 0]
-    
+
+    mode = CalibrationMode(mode)
+
     # Convert rvec, tvec to transformation matrix
     R_target_cam, _ = cv2.Rodrigues(rvec)
     t_target_cam = tvec.flatten()
-    
+
     T_target_cam = np.eye(4)
     T_target_cam[:3, :3] = R_target_cam
     T_target_cam[:3, 3] = t_target_cam
-    
-    # Current camera pose in base frame
-    T_cam_base_current = T_gripper_base_current @ T_cam_gripper
-    
+
+    if mode == CalibrationMode.EYE_TO_HAND:
+        # Camera is fixed in world; T_calibration = T_cam2base
+        T_cam_base = T_calibration
+    else:
+        # Camera is on gripper; T_calibration = T_cam2gripper
+        T_cam_base = T_gripper_base_current @ T_calibration
+
     # Target (charuco board) pose in base frame
-    T_target_base = T_cam_base_current @ T_target_cam
-    
+    T_target_base = T_cam_base @ T_target_cam
+
     # Desired gripper pose: aligned with charuco board, offset along Z axis
     T_gripper_target_desired = np.eye(4)
     T_gripper_target_desired[:3, 3] = [
@@ -318,9 +400,9 @@ def compute_alignment_pose(
         target_point_in_board[1],
         target_point_in_board[2] - offset_distance
     ]
-    
+
     # Desired gripper pose in base frame
     T_gripper_base_desired = T_target_base @ T_gripper_target_desired
-    
+
     return T_gripper_base_desired
 

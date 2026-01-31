@@ -34,12 +34,13 @@ import dearpygui.dearpygui as dpg
 from scipy.spatial.transform import Rotation as R
 
 # Set default server IP before importing franky
-os.environ.setdefault("FRANKY_SERVER_IP", "192.168.122.100")
+os.environ.setdefault("FRANKY_SERVER_IP", "172.16.0.48")
 
 from franka_handeye import (
     RealSenseCamera,
     CharucoDetector,
     RobotController,
+    CalibrationMode,
     NumpyEncoder,
     load_captured_data,
     compute_hand_eye_calibration,
@@ -172,7 +173,7 @@ def setup_theme():
 
 class AppState:
     """Central application state management."""
-    
+
     def __init__(self):
         # Hardware
         self.robot: RobotController | None = None
@@ -180,13 +181,19 @@ class AppState:
         self.detector: CharucoDetector | None = None
         self.K: np.ndarray | None = None
         self.D: np.ndarray | None = None
-        
+
+        # Camera selection
+        self.available_cameras: list[dict] = []
+        self.selected_camera_serial: str | None = None
+
         # Paths
         self.output_dir = Path("data/captured-data")
         self.calibration_dir = Path("data/hand-eye-calibration-output")
         self.calibration_file = self.calibration_dir / "calibration_result.json"
         self.board_params_path = Path("config/calibration_board_parameters.yaml")
+        self.default_poses_config_path = Path("config/default_joint_poses.yaml")
         self.poses_config_path = Path("config/joint_poses.yaml")
+        self.auto_poses_config_path = self.default_poses_config_path
         
         # Capture state
         self.captured_count = 0
@@ -199,7 +206,8 @@ class AppState:
         
         # Calibration state
         self.calibration_result: dict | None = None
-        self.T_cam_gripper: np.ndarray | None = None
+        self.T_calibration_result: np.ndarray | None = None
+        self.calibration_mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
         
         # Jogging state
         self.jog_buttons_pressed = {}
@@ -219,9 +227,19 @@ class AppState:
             return True
         
         try:
-            # Camera (lazy init)
-            print("Initializing Camera...")
-            self.camera = RealSenseCamera(lazy=True)
+            # Enumerate available cameras
+            self.available_cameras = RealSenseCamera.list_devices()
+            if self.available_cameras:
+                print(f"Found {len(self.available_cameras)} camera(s):")
+                for cam in self.available_cameras:
+                    print(f"  - {cam['name']} (SN: {cam['serial_number']})")
+                # Auto-select first camera if none selected
+                if self.selected_camera_serial is None:
+                    self.selected_camera_serial = self.available_cameras[0]['serial_number']
+
+            # Camera (lazy init with selected serial)
+            print(f"Initializing Camera (SN: {self.selected_camera_serial})...")
+            self.camera = RealSenseCamera(lazy=True, serial_number=self.selected_camera_serial)
             
             # Robot - attempt connection but don't fail if it doesn't work
             self.connect_robot()
@@ -238,10 +256,10 @@ class AppState:
             
             # Load existing calibration if available
             if self.calibration_file.exists():
-                self.T_cam_gripper = load_calibration_result(self.calibration_file)
+                self.T_calibration_result, self.calibration_mode = load_calibration_result(self.calibration_file)
                 with open(self.calibration_file, 'r') as f:
                     self.calibration_result = json.load(f)
-                print("Loaded existing calibration.")
+                print(f"Loaded existing calibration (mode: {self.calibration_mode.value}).")
             
             # Load existing captures (count and joint poses)
             if self.output_dir.exists():
@@ -264,7 +282,7 @@ class AppState:
                 
                 if self.captured_poses:
                     print(f"Loaded {len(self.captured_poses)} existing joint poses.")
-                    # Sync joint_poses.yaml with loaded poses
+                    # Sync custom poses file with loaded poses
                     self._sync_poses_config()
             
             self._initialized = True
@@ -275,7 +293,7 @@ class AppState:
             return False
     
     def _sync_poses_config(self):
-        """Sync joint_poses.yaml with captured_poses list."""
+        """Sync custom poses file with captured_poses list."""
         if not self.captured_poses:
             return
         
@@ -288,6 +306,10 @@ class AppState:
         with open(self.poses_config_path, 'w') as f:
             f.write(yaml_content)
         print(f"Synced {len(self.captured_poses)} poses to {self.poses_config_path}")
+
+    def get_auto_capture_poses_path(self) -> Path:
+        """Return the poses config used for auto-capture."""
+        return self.auto_poses_config_path
     
     def connect_robot(self) -> bool:
         """
@@ -408,11 +430,43 @@ def log(message: str, level: str = "info"):
 def reconnect_robot():
     """Attempt to reconnect to the robot."""
     log(f"Attempting to reconnect to robot at {state.host}...", "info")
-    
+
     if state.connect_robot():
         log("Robot reconnected successfully!", "success")
     else:
         log(f"Reconnection failed: {state.robot_error}", "error")
+
+
+def switch_camera(serial_number: str):
+    """Switch to a different camera by serial number."""
+    if serial_number == state.selected_camera_serial:
+        return
+
+    log(f"Switching to camera SN: {serial_number}...", "info")
+
+    # Stop current camera
+    if state.camera:
+        state.camera.stop()
+        state.camera = None
+        state.K = None
+        state.D = None
+        state._camera_init_attempted = False
+
+    # Create new camera with selected serial
+    state.selected_camera_serial = serial_number
+    state.camera = RealSenseCamera(lazy=True, serial_number=serial_number)
+
+    log(f"Camera switched to SN: {serial_number}", "success")
+
+
+def _on_camera_selected(combo_value: str):
+    """Handle camera selection from combo box."""
+    # Extract serial number from combo label "Name (SN: XXXX)"
+    for cam in state.available_cameras:
+        label = f"{cam['name']} (SN: {cam['serial_number']})"
+        if label == combo_value:
+            switch_camera(cam['serial_number'])
+            return
 
 
 # =============================================================================
@@ -427,7 +481,6 @@ def update_camera_texture(frame: np.ndarray):
     # Resize to texture size (fixed buffer size)
     display_frame = cv2.resize(frame, (ui_state['video_width'], ui_state['video_height']))
     rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-    rgb_frame = np.flipud(rgb_frame)
     normalized = rgb_frame.astype(np.float32) / 255.0
     flat = normalized.flatten()
     dpg.set_value(ui_state['video_texture'], flat)
@@ -527,6 +580,7 @@ def _capture_impl(save_to_config=True) -> bool:
         cv2.imwrite(str(pose_dir / "image.png"), state.last_frame)
         
         data = {
+            "calibration_mode": state.calibration_mode.value,
             "joint_pose": q,
             "O_T_EE": O_T_EE,
             "camera_intrinsics": state.K.tolist() if state.K is not None else None,
@@ -646,13 +700,16 @@ def start_auto_capture(sender=None, app_data=None, user_data=None):
         log("Robot not connected", "error")
         return
         
-    # Load poses
-    if not state.poses_config_path.exists():
-        log(f"Config file not found: {state.poses_config_path}", "error")
+    # Load poses (custom file if available, otherwise default)
+    poses_path = state.get_auto_capture_poses_path()
+    if not poses_path.exists():
+        log(f"Config file not found: {poses_path}", "error")
         return
         
     try:
-        with open(state.poses_config_path, 'r') as f:
+        log(f"Using poses config: {poses_path}", "info")
+
+        with open(poses_path, 'r') as f:
             config = yaml.safe_load(f)
             
         if not config or 'joint_poses' not in config:
@@ -679,81 +736,97 @@ def stop_auto_capture(sender=None, app_data=None, user_data=None):
         log("Stopping auto-capture...", "warning")
 
 
-def _show_calibration_plot_thread(T_g2b, T_cam_gripper, T_t2c):
+def _show_calibration_plot_thread(T_g2b, T_calibration, T_t2c, mode=CalibrationMode.EYE_IN_HAND):
     """Thread to show calibration plot."""
     plot_verification_preview(
-        T_g2b, 
-        T_cam_gripper, 
+        T_g2b,
+        T_calibration,
         T_t2c,
+        mode=mode,
         title="Calibration Result (Last Pose)\nClose window to continue"
     )
+
+
+def _radio_to_mode(radio_value: str) -> CalibrationMode:
+    """Convert radio button label to CalibrationMode."""
+    if radio_value == "Eye-to-Hand":
+        return CalibrationMode.EYE_TO_HAND
+    return CalibrationMode.EYE_IN_HAND
+
+
+def _mode_to_radio(mode: CalibrationMode) -> str:
+    """Convert CalibrationMode to radio button label."""
+    if mode == CalibrationMode.EYE_TO_HAND:
+        return "Eye-to-Hand"
+    return "Eye-in-Hand"
 
 
 def run_calibration():
     """Run the calibration computation."""
     try:
+        mode = _radio_to_mode(dpg.get_value("calibration_mode_radio"))
         R_g2b, t_g2b, R_t2c, t_t2c = load_captured_data(state.output_dir)
-        
+
         if len(R_g2b) < 12:
             log(f"Need at least 12 valid poses for calibration (found {len(R_g2b)})", "error")
             return
-        
-        log(f"Running calibration with {len(R_g2b)} poses...", "info")
-        
-        R_cam2gripper, t_cam2gripper = compute_hand_eye_calibration(
-            R_g2b, t_g2b, R_t2c, t_t2c
+
+        log(f"Running {mode.value} calibration with {len(R_g2b)} poses...", "info")
+
+        R_result, t_result = compute_hand_eye_calibration(
+            R_g2b, t_g2b, R_t2c, t_t2c, mode=mode
         )
-        
-        T_cam2gripper = np.eye(4)
-        T_cam2gripper[:3, :3] = R_cam2gripper
-        T_cam2gripper[:3, 3] = t_cam2gripper.flatten()
-        
+
+        T_result = np.eye(4)
+        T_result[:3, :3] = R_result
+        T_result[:3, 3] = t_result.flatten()
+
         mean_err, std_err = compute_consistency_metrics(
-            R_g2b, t_g2b, R_t2c, t_t2c, T_cam2gripper
+            R_g2b, t_g2b, R_t2c, t_t2c, T_result, mode=mode
         )
-        
+
         state.calibration_result = save_calibration_result(
-            state.calibration_file, R_cam2gripper, t_cam2gripper, mean_err, std_err
+            state.calibration_file, R_result, t_result, mean_err, std_err, mode=mode
         )
-        state.T_cam_gripper = T_cam2gripper
-        
-        log(f"Calibration complete! Error: {mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm", "success")
-        
-        # Show 3D plot
-        # Use last captured pose for visualization
+        state.T_calibration_result = T_result
+        state.calibration_mode = mode
+
+        mode_label = "T_cam_base" if mode == CalibrationMode.EYE_TO_HAND else "T_cam_gripper"
+        log(f"Calibration complete ({mode_label})! Error: {mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm", "success")
+
+        # Show 3D plot using last captured pose
         idx = -1
         T_g2b_last = np.eye(4)
         T_g2b_last[:3, :3] = R_g2b[idx]
         T_g2b_last[:3, 3] = t_g2b[idx].flatten()
-        
+
         T_t2c_last = np.eye(4)
         T_t2c_last[:3, :3] = R_t2c[idx]
         T_t2c_last[:3, 3] = t_t2c[idx].flatten()
-        
+
         threading.Thread(
             target=_show_calibration_plot_thread,
-            args=(T_g2b_last, T_cam2gripper, T_t2c_last),
+            args=(T_g2b_last, T_result, T_t2c_last, mode),
             daemon=True
         ).start()
-        
+
     except Exception as e:
         log(f"Calibration error: {e}", "error")
 
 
 import multiprocessing
 
-def _run_plot_process(T_gripper_base_desired, T_cam_gripper, T_target_cam, queue, title=None):
+def _run_plot_process(T_gripper_base, T_calibration, T_target_cam, queue, title=None, mode_str="eye_in_hand"):
     """
     Process function to run the matplotlib plot.
     Puts True in queue if proceeding, False if cancelled.
     """
     try:
         import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
-        
+
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
-        
+
         def plot_frame(T, label, scale=0.1):
             R_mat = T[:3, :3]
             t = T[:3, 3]
@@ -764,17 +837,26 @@ def _run_plot_process(T_gripper_base_desired, T_cam_gripper, T_target_cam, queue
 
         # Plot Base Frame (0,0,0)
         plot_frame(np.eye(4), "Base", scale=0.2)
-        
-        # Plot Gripper Frame (desired position)
-        plot_frame(T_gripper_base_desired, "Gripper (target)")
-        
+
+        # Plot Gripper Frame
+        plot_frame(T_gripper_base, "Gripper")
+
         # Plot Camera Frame
-        T_cam_base = T_gripper_base_desired @ T_cam_gripper
-        plot_frame(T_cam_base, "Camera")
-        
+        if mode_str == "eye_to_hand":
+            # Eye-to-hand: camera is fixed at T_calibration (T_cam2base)
+            T_cam_base = T_calibration
+            plot_frame(T_cam_base, "Camera (fixed)")
+        else:
+            # Eye-in-hand: camera is on gripper
+            T_cam_base = T_gripper_base @ T_calibration
+            plot_frame(T_cam_base, "Camera")
+
         # Plot Target (Charuco) Frame
         T_target_base = T_cam_base @ T_target_cam
-        plot_frame(T_target_base, "Charuco")
+        if mode_str == "eye_to_hand":
+            plot_frame(T_target_base, "Charuco (on gripper)")
+        else:
+            plot_frame(T_target_base, "Charuco")
         
         # Set labels and auto-scale
         ax.set_xlabel('X (m)')
@@ -783,9 +865,9 @@ def _run_plot_process(T_gripper_base_desired, T_cam_gripper, T_target_cam, queue
         
         # Collect all points to set axes limits
         points = np.vstack([
-            np.zeros(3), 
-            T_gripper_base_desired[:3, 3], 
-            T_cam_base[:3, 3], 
+            np.zeros(3),
+            T_gripper_base[:3, 3],
+            T_cam_base[:3, 3],
             T_target_base[:3, 3]
         ])
         
@@ -824,15 +906,15 @@ def _run_plot_process(T_gripper_base_desired, T_cam_gripper, T_target_cam, queue
         queue.put(False)
 
 
-def plot_verification_preview(T_gripper_base_desired, T_cam_gripper, T_target_cam, title=None):
+def plot_verification_preview(T_gripper_base, T_calibration, T_target_cam, title=None, mode=CalibrationMode.EYE_IN_HAND):
     """
     Show a matplotlib 3D plot of the planned alignment.
     Runs in a separate PROCESS to avoid crashing the main GUI loop.
     """
     queue = multiprocessing.Queue()
     p = multiprocessing.Process(
-        target=_run_plot_process, 
-        args=(T_gripper_base_desired, T_cam_gripper, T_target_cam, queue, title)
+        target=_run_plot_process,
+        args=(T_gripper_base, T_calibration, T_target_cam, queue, title, mode.value)
     )
     p.start()
     p.join()  # Wait for process to finish (window closed)
@@ -842,10 +924,10 @@ def plot_verification_preview(T_gripper_base_desired, T_cam_gripper, T_target_ca
     return False
 
 
-def move_to_board_position(robot, T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, target_point, position_name):
+def move_to_board_position(robot, T_gripper_base_current, T_calibration, rvec, tvec, offset, target_point, position_name, mode=CalibrationMode.EYE_IN_HAND):
     """Move robot to a position relative to the charuco board."""
     T_gripper_base_desired = compute_alignment_pose(
-        T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, target_point
+        T_gripper_base_current, T_calibration, rvec, tvec, offset, target_point, mode=mode
     )
     
     translation = T_gripper_base_desired[:3, 3].tolist()
@@ -908,35 +990,38 @@ def check_frames_visualizer_thread():
     3. Show plot
     """
     try:
-        if state.T_cam_gripper is None:
+        if state.T_calibration_result is None:
             log("Cannot check frames: No calibration loaded", "error")
             return
-        
+
+        mode = state.calibration_mode
+
         # Run homing and detection
         valid, rvec, tvec = run_homing_and_detection()
         if not valid:
             return
-            
+
         # Get current robot state (should be home)
         T_gripper_base_current = state.robot.get_state()['O_T_EE']
-        
+
         # Compute transforms for visualization
         R_target_cam, _ = cv2.Rodrigues(rvec)
         T_target_cam = np.eye(4)
         T_target_cam[:3, :3] = R_target_cam
         T_target_cam[:3, 3] = tvec.flatten()
-        
+
         log("[PLOT] Showing frame plot...", "info")
         log("   Close window to finish", "info")
-        
+
         # Show plot
         plot_verification_preview(
-            T_gripper_base_current, 
-            state.T_cam_gripper, 
+            T_gripper_base_current,
+            state.T_calibration_result,
             T_target_cam,
+            mode=mode,
             title="Current Frame Check\nClose window to finish"
         )
-        
+
         log("[OK] Frame check complete", "success")
 
     except Exception as e:
@@ -952,21 +1037,27 @@ def verify_visit_corners_thread():
     2. Moves to center
     3. Tours corners
     4. Returns home
+
+    Not available in eye-to-hand mode (board is on gripper).
     """
     try:
         # Validate prerequisites
         if not state.robot:
             log("Cannot verify: Robot not connected", "error")
             return
-        if state.T_cam_gripper is None:
+        if state.T_calibration_result is None:
             log("Cannot verify: No calibration loaded", "error")
             return
-            
+        if state.calibration_mode == CalibrationMode.EYE_TO_HAND:
+            log("Corner visit is not available in eye-to-hand mode (board is on gripper)", "warning")
+            return
+
+        mode = state.calibration_mode
         offset = 0.06  # 6cm offset from board
-        
+
         # Use current detection from state (updated by UI loop or previous check)
         valid, rvec, tvec = state.current_detection
-        
+
         if not valid:
             log("[ERR] No valid ChArUco detection!", "error")
             log("   Please run 'CHECK CURRENT FRAMES' first or ensure board is visible.", "error")
@@ -976,51 +1067,34 @@ def verify_visit_corners_thread():
         T_gripper_base_current = state.robot.get_state()['O_T_EE']
         center_point = state.detector.get_board_center()
         board_width, board_height = state.detector.board_dimensions
-        
+
         log(f"[CALC] Computing path to board center...", "info")
-        
+
         # Move to board center
         move_to_board_position(
-            state.robot, T_gripper_base_current, state.T_cam_gripper, 
-            rvec, tvec, offset, center_point, "board center"
+            state.robot, T_gripper_base_current, state.T_calibration_result,
+            rvec, tvec, offset, center_point, "board center", mode=mode
         )
         log("[OK] Center alignment complete!", "success")
-        
+
         # Tour corners
         log("[TARGET] Now visiting the 4 corners of the charuco board...", "info")
         corners = state.detector.get_board_corners()
         corners.append(corners[0])  # Return to first corner
         corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
-        
-        # We need to update T_gripper_base_current after moving to center
-        # Actually, move_to_board_position moves the robot, so get_state() would be updated
-        # BUT compute_alignment_pose uses the detection relative to the STARTING pose
-        # If we move, the detection (rvec, tvec) is relative to the Camera at the STARTING pose.
-        # So we must use the ORIGINAL T_gripper_base_current (where detection happened)
-        # combined with the ORIGINAL rvec/tvec.
-        
-        # Wait, if the robot moved, the detection in 'state.current_detection' might be from the NEW position?
-        # state.current_detection is updated by update_ui -> get_video_frame loop.
-        # If the robot is at Center, we might lose detection (too close?).
-        # But we should use the detection we started with.
-        
-        # CRITICAL: state.current_detection is live. 
-        # If we trust the user ran "Check Frames" (went Home) and we are still at Home, 
-        # then state.current_detection corresponds to Home.
-        
-        # Let's grab the detection snapshot at the start of this function
+
         start_rvec = rvec
         start_tvec = tvec
-        start_T_gripper_base = T_gripper_base_current # Robot is presumably at Home
-        
+        start_T_gripper_base = T_gripper_base_current
+
         for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
             log(f"--- Corner {i+1}/5: {corner_name} ---", "info")
             move_to_board_position(
-                state.robot, start_T_gripper_base, state.T_cam_gripper,
-                start_rvec, start_tvec, offset, corner, f"{corner_name} corner"
+                state.robot, start_T_gripper_base, state.T_calibration_result,
+                start_rvec, start_tvec, offset, corner, f"{corner_name} corner", mode=mode
             )
             time.sleep(0.3)
-        
+
         log("[OK] Corner tour complete!", "success")
         
         # Return to home
@@ -1191,20 +1265,50 @@ def create_ui():
         # ===== HEADER =====
         with dpg.group(horizontal=True):
             dpg.add_text("FRANKA HAND-EYE CALIBRATION", color=Theme.ACCENT_PRIMARY)
-            dpg.add_spacer(width=30)
+            dpg.add_spacer(width=20)
+
+            # Mode selector
+            dpg.add_text("Mode:", color=Theme.TEXT_SECONDARY)
+            dpg.add_radio_button(
+                items=["Eye-in-Hand", "Eye-to-Hand"],
+                tag="calibration_mode_radio",
+                default_value="Eye-in-Hand",
+                horizontal=True,
+                callback=lambda s, a: setattr(state, 'calibration_mode', _radio_to_mode(a))
+            )
+            dpg.add_spacer(width=20)
+
             dpg.add_text("Robot:", color=Theme.TEXT_SECONDARY)
             dpg.add_text("Disconnected", tag="robot_status", color=Theme.DISCONNECTED)
             dpg.add_spacer(width=10)
-            reconnect_btn = dpg.add_button(
-                label="Reconnect", 
+            dpg.add_button(
+                label="Reconnect",
                 tag="reconnect_btn",
-                callback=reconnect_robot, 
-                width=90, 
+                callback=reconnect_robot,
+                width=90,
                 height=24
             )
-            dpg.add_spacer(width=30)
+            dpg.add_spacer(width=20)
             dpg.add_text("Camera:", color=Theme.TEXT_SECONDARY)
             dpg.add_text("Disconnected", tag="camera_status", color=Theme.DISCONNECTED)
+
+        # Camera selector row (below main header)
+        with dpg.group(horizontal=True):
+            dpg.add_text("Select Camera:", color=Theme.TEXT_SECONDARY)
+            dpg.add_spacer(width=8)
+            # Build camera list items
+            camera_items = []
+            for cam in state.available_cameras:
+                camera_items.append(f"{cam['name']} (SN: {cam['serial_number']})")
+            if not camera_items:
+                camera_items = ["No cameras found"]
+            dpg.add_combo(
+                items=camera_items,
+                tag="camera_selector",
+                default_value=camera_items[0] if camera_items else "",
+                width=350,
+                callback=lambda s, a: _on_camera_selected(a)
+            )
         
         # Robot error message (hidden by default)
         dpg.add_text("", tag="robot_error_msg", color=Theme.ACCENT_WARNING, show=False)
@@ -1534,20 +1638,26 @@ def update_ui():
     
     # Update calibration display
     if state.calibration_result:
-        dpg.set_value("calib_status", "Loaded")
+        mode_label = state.calibration_mode.value.replace("_", "-")
+        dpg.set_value("calib_status", f"Loaded ({mode_label})")
         dpg.configure_item("calib_status", color=Theme.ACCENT_SUCCESS)
-        
+
+        # Sync the radio button with the loaded calibration mode
+        radio_value = _mode_to_radio(state.calibration_mode)
+        if dpg.get_value("calibration_mode_radio") != radio_value:
+            dpg.set_value("calibration_mode_radio", radio_value)
+
         xyz = state.calibration_result.get('xyz', [0, 0, 0])
         quat = state.calibration_result.get('quaternion_xyzw', [0, 0, 0, 1])
         euler_calib = R.from_quat(quat).as_euler('xyz', degrees=True)
         mean_err = state.calibration_result.get('consistency_error_mean', 0)
         std_err = state.calibration_result.get('consistency_error_std', 0)
-        
+
         dpg.set_value("calib_translation", f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}, {euler_calib[0]:.2f}°, {euler_calib[1]:.2f}°, {euler_calib[2]:.2f}°]")
         dpg.set_value("calib_quaternion", f"[{quat[0]:.4f}, {quat[1]:.4f}, {quat[2]:.4f}, {quat[3]:.4f}]")
         dpg.set_value("calib_error", f"{mean_err*1000:.2f}mm +/- {std_err*1000:.2f}mm")
-        
-        dpg.set_value("verify_calib_status", "Loaded")
+
+        dpg.set_value("verify_calib_status", f"Loaded ({mode_label})")
         dpg.configure_item("verify_calib_status", color=Theme.ACCENT_SUCCESS)
     else:
         dpg.set_value("calib_status", "No calibration")
@@ -1611,13 +1721,21 @@ def main():
         description="Franka Hand-Eye Calibration Application"
     )
     parser.add_argument("--host", default="172.16.0.2", help="Robot FCI IP address")
+    parser.add_argument(
+        "--poses",
+        default="config/default_joint_poses.yaml",
+        help="Joint poses config for auto-capture",
+    )
     args, _ = parser.parse_known_args()
     
     print("=" * 60)
     print("  FRANKA HAND-EYE CALIBRATION APPLICATION")
     print("=" * 60)
     print(f"  Robot Host: {args.host}")
+    print(f"  Auto-Capture Poses: {args.poses}")
     print("=" * 60)
+
+    state.auto_poses_config_path = Path(args.poses)
     
     # Initialize
     if state.initialize(args.host):
@@ -1641,4 +1759,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

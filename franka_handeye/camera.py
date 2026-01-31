@@ -14,7 +14,7 @@ except ImportError:
 class RealSenseCamera:
     """
     RealSense camera wrapper with lazy initialization support.
-    
+
     Parameters
     ----------
     lazy : bool
@@ -24,26 +24,50 @@ class RealSenseCamera:
         Camera resolution (width, height). Default is (1280, 720).
     fps : int
         Frame rate. Default is 30.
+    serial_number : str or None
+        Serial number of the camera to use. If None, uses the first available.
     """
-    
-    def __init__(self, lazy: bool = False, resolution: tuple = (1280, 720), fps: int = 30):
+
+    def __init__(self, lazy: bool = False, resolution: tuple = (1280, 720), fps: int = 30, serial_number: str | None = None):
         if not REALSENSE_AVAILABLE:
             raise RuntimeError("pyrealsense2 is not installed")
-            
+
         self.pipeline = None
         self.config = None
         self.profile = None
         self.intrinsics = None
         self.resolution = resolution
         self.fps = fps
-        
+        self.serial_number = serial_number
+
         if not lazy:
             self.initialize()
-    
+
+    @staticmethod
+    def list_devices() -> list[dict]:
+        """
+        List all connected RealSense devices.
+
+        Returns
+        -------
+        list of dict
+            Each dict has 'name' and 'serial_number' keys.
+        """
+        if not REALSENSE_AVAILABLE:
+            return []
+        ctx = rs.context()
+        devices = []
+        for dev in ctx.query_devices():
+            devices.append({
+                'name': dev.get_info(rs.camera_info.name),
+                'serial_number': dev.get_info(rs.camera_info.serial_number),
+            })
+        return devices
+
     def initialize(self) -> bool:
         """
         Initialize the camera pipeline.
-        
+
         Returns
         -------
         bool
@@ -51,15 +75,17 @@ class RealSenseCamera:
         """
         if self.pipeline is not None:
             return True
-            
+
         try:
             self.pipeline = rs.pipeline()
             self.config = rs.config()
+            if self.serial_number:
+                self.config.enable_device(self.serial_number)
             self.config.enable_stream(
-                rs.stream.color, 
-                self.resolution[0], 
-                self.resolution[1], 
-                rs.format.bgr8, 
+                rs.stream.color,
+                self.resolution[0],
+                self.resolution[1],
+                rs.format.bgr8,
                 self.fps
             )
             self.profile = self.pipeline.start(self.config)
@@ -68,7 +94,8 @@ class RealSenseCamera:
             return True
         except RuntimeError as e:
             self.pipeline = None
-            if "Device or resource busy" in str(e):
+            # Handle transient errors gracefully - GUI will retry
+            if "Device or resource busy" in str(e) or "Couldn't resolve requests" in str(e):
                 return False
             raise
     

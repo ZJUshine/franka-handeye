@@ -51,7 +51,8 @@ pip install -e .
 *Failure to update these values will result in incorrect calibration!*
 
 ### Joint Poses
-*   `config/joint_poses.yaml`: Contains the 12 poses used for Auto Capture.
+*   `config/default_joint_poses.yaml`: Default 12+ poses used for Auto Capture.
+*   `config/joint_poses.yaml`: Custom poses (auto-created/updated when you manually capture).
 
 
 ## Quick Start
@@ -61,6 +62,7 @@ Run the GUI application:
 python franka-handeye-app.py --host <ROBOT_IP>
 ```
 *Default host is `172.16.0.2`*
+*Default poses file is `config/default_joint_poses.yaml` (override with `--poses <path>`).*
 
 ### Workflow
 1.  **Capture**:

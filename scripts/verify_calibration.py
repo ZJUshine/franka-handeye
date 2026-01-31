@@ -24,30 +24,34 @@ from franka_handeye import (
     RealSenseCamera,
     CharucoDetector,
     RobotController,
+    CalibrationMode,
     load_calibration_result,
     compute_alignment_pose,
 )
 
 
-def plot_verification(T_gripper_base, T_cam_gripper, T_target_cam):
+def plot_verification(T_gripper_base, T_calibration, T_target_cam, mode=CalibrationMode.EYE_IN_HAND):
     """
     Plot the frames after verification movement.
-    
+
     Parameters
     ----------
     T_gripper_base : np.ndarray
         4x4 matrix (Gripper in Base).
-    T_cam_gripper : np.ndarray
-        4x4 matrix (Camera in Gripper - Calibration result).
+    T_calibration : np.ndarray
+        4x4 matrix - calibration result.
+        EYE_IN_HAND: Camera in Gripper
+        EYE_TO_HAND: Camera in Base
     T_target_cam : np.ndarray
         4x4 matrix (Target in Camera - Detection result).
+    mode : CalibrationMode
+        Calibration mode.
     """
     import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
-    
+
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    
+
     def plot_frame(T, label, scale=0.1):
         R_mat = T[:3, :3]
         t = T[:3, 3]
@@ -58,39 +62,47 @@ def plot_verification(T_gripper_base, T_cam_gripper, T_target_cam):
 
     # Plot Base Frame (0,0,0)
     plot_frame(np.eye(4), "Base", scale=0.2)
-    
+
     # Plot Gripper Frame
     plot_frame(T_gripper_base, "Gripper")
-    
+
     # Plot Camera Frame
-    T_cam_base = T_gripper_base @ T_cam_gripper
-    plot_frame(T_cam_base, "Camera")
-    
+    if mode == CalibrationMode.EYE_TO_HAND:
+        T_cam_base = T_calibration
+        plot_frame(T_cam_base, "Camera (fixed)")
+    else:
+        T_cam_base = T_gripper_base @ T_calibration
+        plot_frame(T_cam_base, "Camera")
+
     # Plot Target (Charuco) Frame
     T_target_base = T_cam_base @ T_target_cam
-    plot_frame(T_target_base, "Charuco")
-    
+    if mode == CalibrationMode.EYE_TO_HAND:
+        plot_frame(T_target_base, "Charuco (on gripper)")
+    else:
+        plot_frame(T_target_base, "Charuco")
+
     # Set labels and auto-scale
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
     ax.set_zlabel('Z (m)')
-    
+
     # Collect all points to set axes limits
     points = np.vstack([
-        np.zeros(3), 
-        T_gripper_base[:3, 3], 
-        T_cam_base[:3, 3], 
+        np.zeros(3),
+        T_gripper_base[:3, 3],
+        T_cam_base[:3, 3],
         T_target_base[:3, 3]
     ])
-    
+
     center = np.mean(points, axis=0)
     radius = np.max(np.linalg.norm(points - center, axis=1)) + 0.1
-    
+
     ax.set_xlim(center[0] - radius, center[0] + radius)
     ax.set_ylim(center[1] - radius, center[1] + radius)
     ax.set_zlim(center[2] - radius, center[2] + radius)
-    
-    plt.title("Verification: Frame Alignment")
+
+    mode_label = "eye-to-hand" if mode == CalibrationMode.EYE_TO_HAND else "eye-in-hand"
+    plt.title(f"Verification: Frame Alignment ({mode_label})")
     plt.legend(['X', 'Y', 'Z'])
     plt.show(block=True)
 
@@ -98,24 +110,25 @@ def plot_verification(T_gripper_base, T_cam_gripper, T_target_cam):
 def move_to_board_position(
     robot: RobotController,
     T_gripper_base_current: np.ndarray,
-    T_cam_gripper: np.ndarray,
+    T_calibration: np.ndarray,
     rvec: np.ndarray,
     tvec: np.ndarray,
     offset: float,
     target_point: list,
-    position_name: str = "target"
+    position_name: str = "target",
+    mode: CalibrationMode = CalibrationMode.EYE_IN_HAND
 ):
     """
     Move robot to a position relative to the charuco board.
-    
+
     Parameters
     ----------
     robot : RobotController
         Robot controller instance.
     T_gripper_base_current : np.ndarray
         Current gripper pose.
-    T_cam_gripper : np.ndarray
-        Camera-to-gripper calibration.
+    T_calibration : np.ndarray
+        Calibration result.
     rvec : np.ndarray
         Board rotation vector.
     tvec : np.ndarray
@@ -126,9 +139,11 @@ def move_to_board_position(
         Target point in board frame [x, y, z].
     position_name : str
         Name for logging.
+    mode : CalibrationMode
+        Calibration mode.
     """
     T_gripper_base_desired = compute_alignment_pose(
-        T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, target_point
+        T_gripper_base_current, T_calibration, rvec, tvec, offset, target_point, mode=mode
     )
     
     translation = T_gripper_base_desired[:3, 3].tolist()
@@ -145,11 +160,12 @@ def run_verification(
     offset: float = 0.06,
     board_params_path: str = "config/calibration_board_parameters.yaml",
     show_plot: bool = True,
-    tour_corners: bool = True
+    tour_corners: bool = True,
+    mode: CalibrationMode | None = None
 ) -> bool:
     """
     Run the verification procedure.
-    
+
     Parameters
     ----------
     host : str
@@ -163,8 +179,10 @@ def run_verification(
     show_plot : bool
         Whether to show preview plot.
     tour_corners : bool
-        Whether to tour all corners.
-    
+        Whether to tour all corners (ignored for eye-to-hand mode).
+    mode : CalibrationMode or None
+        Calibration mode. If None, auto-detected from calibration file.
+
     Returns
     -------
     bool
@@ -173,12 +191,17 @@ def run_verification(
     # Load calibration
     calib_path = Path(calibration_path)
     if not calib_path.exists():
-        print(f"\n❌ ERROR: Calibration file not found: {calib_path}")
+        print(f"\n ERROR: Calibration file not found: {calib_path}")
         print("   Run: python scripts/compute_calibration.py")
         return False
-    
-    print(f"\n✓ Loading calibration from {calib_path}")
-    T_cam_gripper = load_calibration_result(calib_path)
+
+    print(f"\n Loading calibration from {calib_path}")
+    T_calibration, detected_mode = load_calibration_result(calib_path)
+
+    # Use provided mode or auto-detected mode
+    if mode is None:
+        mode = detected_mode
+    print(f" Mode: {mode.value}")
     
     # Initialize camera
     print("✓ Initializing RealSense camera...")
@@ -259,7 +282,7 @@ def run_verification(
         
         # Compute alignment pose
         T_gripper_base_desired = compute_alignment_pose(
-            T_gripper_base_current, T_cam_gripper, rvec, tvec, offset, center_point
+            T_gripper_base_current, T_calibration, rvec, tvec, offset, center_point, mode=mode
         )
         
         # Show preview plot
@@ -268,71 +291,79 @@ def run_verification(
             T_target_cam = np.eye(4)
             T_target_cam[:3, :3] = R_target_cam
             T_target_cam[:3, 3] = tvec.flatten()
-        
-            T_cam_base = T_gripper_base_current @ T_cam_gripper
+
+            if mode == CalibrationMode.EYE_TO_HAND:
+                T_cam_base = T_calibration
+            else:
+                T_cam_base = T_gripper_base_current @ T_calibration
             T_target_base = T_cam_base @ T_target_cam
-            
-            T_cam_base_preview = T_gripper_base_desired @ T_cam_gripper
+
+            if mode == CalibrationMode.EYE_TO_HAND:
+                T_cam_base_preview = T_calibration
+            else:
+                T_cam_base_preview = T_gripper_base_desired @ T_calibration
             T_target_cam_preview = np.linalg.inv(T_cam_base_preview) @ T_target_base
-        
-            print("\n📊 Displaying preview of center alignment...")
+
+            print("\n Displaying preview of center alignment...")
             print("   (Close the plot window to continue)")
-            plot_verification(T_gripper_base_desired, T_cam_gripper, T_target_cam_preview)
-            
+            plot_verification(T_gripper_base_desired, T_calibration, T_target_cam_preview, mode=mode)
+
             # Confirm before moving
             print("\n" + "=" * 50)
-            print("📋 Preview complete. Ready to move the robot.")
+            print(" Preview complete. Ready to move the robot.")
             print("=" * 50)
             try:
-                input("\n➤ Press ENTER to proceed with motion or Ctrl+C to abort: ")
+                input("\n Press ENTER to proceed with motion or Ctrl+C to abort: ")
             except KeyboardInterrupt:
-                print("\n\n❌ Motion aborted by user")
+                print("\n\n Motion aborted by user")
                 return False
-        
+
         # Move to center
         move_to_board_position(
-            robot, T_gripper_base_current, T_cam_gripper, rvec, tvec,
-            offset, center_point, "board center"
+            robot, T_gripper_base_current, T_calibration, rvec, tvec,
+            offset, center_point, "board center", mode=mode
         )
-        
-        print("\n✅ Center alignment complete!")
-        
-        # Tour corners if requested
-        if tour_corners:
-            print("\n🎯 Now visiting the 4 corners of the charuco board...")
+
+        print("\n Center alignment complete!")
+
+        # Tour corners if requested (only for eye-in-hand mode)
+        if tour_corners and mode == CalibrationMode.EYE_IN_HAND:
+            print("\n Now visiting the 4 corners of the charuco board...")
             corners = detector.get_board_corners()
             corners.append(corners[0])  # Return to first corner
             corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left", "Top-Left (return)"]
-        
+
             for i, (corner, corner_name) in enumerate(zip(corners, corner_names)):
                 print(f"\n--- Corner {i+1}/5: {corner_name} ---")
                 move_to_board_position(
-                    robot, T_gripper_base_current, T_cam_gripper, rvec, tvec,
-                    offset, corner, f"{corner_name} corner"
+                    robot, T_gripper_base_current, T_calibration, rvec, tvec,
+                    offset, corner, f"{corner_name} corner", mode=mode
                 )
                 time.sleep(0.3)
         
-            print("\n✅ Corner tour complete!")
-        
+            print("\n Corner tour complete!")
+        elif tour_corners and mode == CalibrationMode.EYE_TO_HAND:
+            print("\n Corner tour skipped (not available in eye-to-hand mode)")
+
         # Return to home
-        print("\n🏠 Returning to home position...")
+        print("\n Returning to home position...")
         robot.go_home()
         robot.home_gripper()
-        print("✓ Returned to home position")
-        
+        print(" Returned to home position")
+
         return True
-        
+
     except KeyboardInterrupt:
-        print("\n\n❌ Aborted by user")
+        print("\n\n Aborted by user")
         return False
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\n ERROR: {e}")
         import traceback
         traceback.print_exc()
         return False
     finally:
         camera.stop()
-        print("\n✓ Camera stopped")
+        print("\n Camera stopped")
 
 
 def main():
@@ -346,37 +377,45 @@ def main():
                         help="Distance from board in meters (default: 0.06)")
     parser.add_argument("--no-plot", action="store_true", help="Skip preview plot")
     parser.add_argument("--no-tour", action="store_true", help="Skip corner tour")
+    parser.add_argument("--mode", default=None,
+                        choices=["eye_in_hand", "eye_to_hand"],
+                        help="Calibration mode (auto-detected from calibration file if omitted)")
     args = parser.parse_args()
+
+    mode = CalibrationMode(args.mode) if args.mode else None
 
     print("=" * 70)
     print("Franka Hand-Eye Calibration - Verification")
+    if mode:
+        print(f"Mode: {mode.value}")
     print("=" * 70)
-    
-    print("\n⚠️  WARNING: This script will move the robot!")
-    print("\n📋 Before proceeding:")
+
+    print("\n  WARNING: This script will move the robot!")
+    print("\n Before proceeding:")
     print("   1. Ensure the charuco board is visible to the camera")
     print("   2. Ensure the workspace is clear and safe")
     print("   3. Have the emergency stop readily accessible")
     print(f"\nThe robot will align the end effector {args.offset}m above the board.")
     print("\n" + "=" * 70)
-    
+
     try:
-        input("\n➤ Press ENTER to continue or Ctrl+C to abort: ")
+        input("\n Press ENTER to continue or Ctrl+C to abort: ")
     except KeyboardInterrupt:
         print("\n\nAborted.")
         return 1
-    
+
     success = run_verification(
         host=args.host,
         calibration_path=args.calibration,
         offset=args.offset,
         show_plot=not args.no_plot,
-        tour_corners=not args.no_tour
+        tour_corners=not args.no_tour,
+        mode=mode
     )
-    
+
     if success:
         print("\n" + "=" * 70)
-        print("🎉 Verification complete!")
+        print(" Verification complete!")
         print("=" * 70)
         return 0
     else:
